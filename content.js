@@ -83,7 +83,6 @@ function extractProfileData() {
     languages:           extractLanguages(md),
     phone:               extractPhone(md, html),
     email:               extractEmail(md, html),
-    about:               extractAbout(md),
     for_sale_count:      extractForSaleCount(md),
     for_sale_address:    forSaleAddr,
     recent_sale_address: recentSaleAddr,
@@ -217,12 +216,6 @@ function extractEmail(md, html) {
   return m ? m[0].toLowerCase() : null;
 }
 
-function extractAbout(md) {
-  const m = md.match(/(?:Get to know|About)[^\n]*\n[-=]+\n\n([\s\S]+?)(?:\n\nSpecialties|\n\n[A-Z][^\n]{0,40}\n[-=]|$)/);
-  if (m) return m[1].replace(/\n+/g, " ").trim().slice(0, 500);
-  return null;
-}
-
 function extractForSaleCount(md) {
   const m = md.match(/For Sale\s*\(([\d,]+)\)/);
   return m ? parseInt(m[1].replace(/,/g, "")) : null;
@@ -230,8 +223,10 @@ function extractForSaleCount(md) {
 
 // ── Shared address helper ─────────────────────────────────────────────────
 
-// Broader regex to catch more street types and formats
-const ADDRESS_PATTERN = /\b\d+\s+[A-Za-z0-9\s.,-]+(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Pl|Place|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq)\b/i;
+// Refined regex to catch common street addresses while avoiding bio-like phrases
+// It expects: digits, followed by 1-3 capitalized or numeric words, and a street type.
+// This prevents matching long lowercase sentences commonly found in bios.
+const ADDRESS_PATTERN = /\b\d{1,5}\s+(?:(?:[A-Z0-9][A-Za-z0-9']{0,15})\s+){1,3}(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Pl|Place|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq|AVENUE|AVE|STREET|ST|ROAD|RD|BOULEVARD|BLVD|LANE|LN|DRIVE|DR|COURT|CT|CIRCLE|CIR|TRAIL|TRL|WAY|PL|PLACE|TERRACE|TER|HIGHWAY|HWY|PARKWAY|PKWY|SQUARE|SQ)\b/;
 
 function _cleanAddress(str) {
   if (!str) return null;
@@ -239,16 +234,31 @@ function _cleanAddress(str) {
 }
 
 function extractForSaleAddress() {
-  // Strategy 1: Look for Zillow property links directly
-  const links = Array.from(document.querySelectorAll('a[href*="/homedetails/"]'));
+  // Try to find the specific "For Sale" or "Listings" section first
+  const sections = document.querySelectorAll('section, div[class*="section"]');
+  let searchArea = document.body;
+  for (const s of sections) {
+    const txt = (s.innerText || "").toLowerCase();
+    if (txt.includes("active listings") || txt.includes("for sale")) {
+      searchArea = s;
+      break;
+    }
+  }
+
+  // Strategy 1: Look for Zillow property links directly within relevant section
+  const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"]'));
   for (const link of links) {
     const text = _cleanAddress(link.innerText);
     if (text && ADDRESS_PATTERN.test(text)) return text;
   }
 
   // Strategy 2: Deep text search using regex across standard heading/address tags
-  const allTextElements = document.querySelectorAll("h3, h4, address, span, p");
+  // We exclude common bio-related containers
+  const allTextElements = searchArea.querySelectorAll("h3, h4, address, span, p");
   for (const el of allTextElements) {
+    // Skip elements that are likely in the bio
+    if (el.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
+
     const text = el.innerText || "";
     const m = text.match(ADDRESS_PATTERN);
     if (m) return _cleanAddress(m[0]);
@@ -260,8 +270,19 @@ function extractForSaleAddress() {
 function extractRecentSaleAddress(forSaleAddr) {
   const forSaleClean = (forSaleAddr || "").toLowerCase();
 
+  // Try to find the "Past Sales" section specifically
+  const sections = document.querySelectorAll('section, div[class*="section"]');
+  let searchArea = document.body;
+  for (const s of sections) {
+    const txt = (s.innerText || "").toLowerCase();
+    if (txt.includes("past sales") || txt.includes("sold")) {
+      searchArea = s;
+      break;
+    }
+  }
+
   // Strategy 1: Look for "Sold" badges and grab the nearest property link
-  const cards = document.querySelectorAll("article, [class*='property-card'], [class*='listing'], li");
+  const cards = searchArea.querySelectorAll("article, [class*='property-card'], [class*='listing'], li");
   for (const card of cards) {
     const cardText = (card.innerText || "").toLowerCase();
     
@@ -277,6 +298,9 @@ function extractRecentSaleAddress(forSaleAddr) {
       // Fallback: search the raw text of the "Sold" card
       const m = cardText.match(ADDRESS_PATTERN);
       if (m) {
+         // Verify it's not in a bio container even if it matched a card-like element (rare but safe)
+         if (card.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
+
          const addr = _cleanAddress(m[0]);
          if (addr.toLowerCase() !== forSaleClean) return addr;
       }
@@ -284,8 +308,10 @@ function extractRecentSaleAddress(forSaleAddr) {
   }
 
   // Strategy 2: Iterate through homedetails links in reverse (Sold properties are usually lower on the page)
-  const links = Array.from(document.querySelectorAll('a[href*="/homedetails/"]')).reverse();
+  const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"]')).reverse();
   for (const link of links) {
+    if (link.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
+
     const text = _cleanAddress(link.innerText);
     if (text && ADDRESS_PATTERN.test(text) && text.toLowerCase() !== forSaleClean) {
       return text;

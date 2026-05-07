@@ -6,6 +6,7 @@ let state = {
   tabId:   null,
   queue:   [],           // profile URLs left to scrape
   results: [],           // scraped AgentProfile objects
+  seenUrls: new Set(),   // profile URLs already processed or in queue
   failed:  [],           // URLs that failed
   cities:  [],
   currentCity: null,
@@ -91,6 +92,7 @@ async function startScraping(config) {
     paused:      false,
     queue:       [],
     results:     [],
+    seenUrls:    new Set(),
     failed:      [],
     totalLinks:  0,
     scraped:     0,
@@ -129,10 +131,18 @@ async function startScraping(config) {
         // Retry same page once
         const retry = await fetchPageLinks(url);
         if (retry) {
-          retry.forEach(l => { if (!links.includes(l)) links.push(l); });
+          retry.forEach(l => {
+            if (!links.includes(l) && !state.seenUrls.has(l)) {
+              links.push(l);
+            }
+          });
         }
       } else {
-        pageLinks.forEach(l => { if (!links.includes(l)) links.push(l); });
+        pageLinks.forEach(l => {
+          if (!links.includes(l) && !state.seenUrls.has(l)) {
+            links.push(l);
+          }
+        });
       }
 
       if (links.length >= config.maxAgents) break;
@@ -140,6 +150,8 @@ async function startScraping(config) {
     }
 
     const cityLinks = links.slice(0, config.maxAgents);
+    cityLinks.forEach(l => state.seenUrls.add(l));
+
     state.totalLinks += cityLinks.length;
     log(`Found ${cityLinks.length} profiles in ${city}`, "ok");
     sendState(`Scraping ${cityLinks.length} profiles in ${city}...`, "running");
