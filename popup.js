@@ -194,7 +194,7 @@ function downloadCSV(agents) {
     "name", "profile_url", "location", "brokerage",
     "rating", "review_count", "years_experience", "recent_sales",
     "for_sale_count", "for_sale_address", "recent_sale_address",
-    "phone", "email", "specialties", "languages", "about", "scraped_at",
+    "phone", "email", "specialties", "languages", "scraped_at",
   ];
 
   const escape = v => {
