@@ -43,9 +43,7 @@ function extractProfileLinks() {
       href.includes("zillow.com/profile/") ||
       (href.includes("zillow.com/professionals/") && href.includes("-agent/"))
     ) {
-      // Clean up URL
-      let clean = href.split("?")[0].split("#")[0];
-      clean = clean.replace(/[)/]+$/, "").replace(/\/+$/, "") + "/";
+      const clean = normalizeUrl(href);
       if (clean.includes("zillow.com/")) {
         links.add(clean);
       }
@@ -56,7 +54,7 @@ function extractProfileLinks() {
   const html = document.documentElement.innerHTML;
   const profileMatches = html.matchAll(/["'](\/profile\/[^"'>\s)]+)/g);
   for (const m of profileMatches) {
-    const clean = "https://www.zillow.com" + m[1].replace(/[)/]+$/, "").replace(/\/+$/, "") + "/";
+    const clean = normalizeUrl("https://www.zillow.com" + m[1]);
     links.add(clean);
   }
 
@@ -86,7 +84,7 @@ function extractProfileData() {
     for_sale_count:      extractForSaleCount(md),
     for_sale_address:    forSaleAddr,
     recent_sale_address: recentSaleAddr,
-    profile_url:         window.location.href.replace(/[)/]+$/, "").replace(/\/+$/, "") + "/",
+    profile_url:         normalizeUrl(window.location.href),
     scraped_at:          new Date().toISOString(),
   };
 }
@@ -319,4 +317,10 @@ function extractRecentSaleAddress(forSaleAddr) {
   }
 
   return null;
+}
+function normalizeUrl(url) {
+  if (!url) return "";
+  let clean = url.split("?")[0].split("#")[0].toLowerCase();
+  clean = clean.replace(/[)/]+$/, "").replace(/\/+$/, "") + "/";
+  return clean;
 }
