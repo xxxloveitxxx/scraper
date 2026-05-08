@@ -131,14 +131,16 @@ async function startScraping(config) {
         // Retry same page once
         const retry = await fetchPageLinks(url);
         if (retry) {
-          retry.forEach(l => {
+          retry.forEach(rawL => {
+            const l = normalizeUrl(rawL);
             if (!links.includes(l) && !state.seenUrls.has(l)) {
               links.push(l);
             }
           });
         }
       } else {
-        pageLinks.forEach(l => {
+        pageLinks.forEach(rawL => {
+          const l = normalizeUrl(rawL);
           if (!links.includes(l) && !state.seenUrls.has(l)) {
             links.push(l);
           }
@@ -173,9 +175,15 @@ async function startScraping(config) {
         const retry = await fetchProfile(profileUrl);
         if (retry) {
           if (isLeadWorthy(retry)) {
-            state.results.push(retry);
-            state.scraped++;
-            log(`✓ Retry ok: ${retry.name || profileUrl}`, "ok");
+            const isDup = state.results.some(r => normalizeUrl(r.profile_url) === normalizeUrl(retry.profile_url));
+            if (!isDup) {
+              state.results.push(retry);
+              state.scraped++;
+              state.seenUrls.add(normalizeUrl(retry.profile_url));
+              log(`✓ Retry ok: ${retry.name || profileUrl}`, "ok");
+            } else {
+              log(`⊘ Skipped duplicate (retry): ${retry.name || profileUrl}`, "warn");
+            }
           } else {
             state.failedCount++;
             log(`⊘ Retry skipped (no email / valid address): ${retry.name || profileUrl}`, "warn");
@@ -187,9 +195,15 @@ async function startScraping(config) {
         }
       } else {
         if (isLeadWorthy(data)) {
-          state.results.push(data);
-          state.scraped++;
-          log(`✓ ${data.name || profileUrl}`, "ok");
+          const isDup = state.results.some(r => normalizeUrl(r.profile_url) === normalizeUrl(data.profile_url));
+          if (!isDup) {
+            state.results.push(data);
+            state.scraped++;
+            state.seenUrls.add(normalizeUrl(data.profile_url));
+            log(`✓ ${data.name || profileUrl}`, "ok");
+          } else {
+            log(`⊘ Skipped duplicate: ${data.name || profileUrl}`, "warn");
+          }
         } else {
           state.failedCount++;
           log(`⊘ Skipped (no email / valid address): ${data.name || profileUrl}`, "warn");
@@ -310,4 +324,10 @@ function isLeadWorthy(data) {
   const hasSold = !!data.recent_sale_address;
 
   return hasEmail || hasForSale || hasSold;
+}
+function normalizeUrl(url) {
+  if (!url) return "";
+  let clean = url.split("?")[0].split("#")[0].toLowerCase();
+  clean = clean.replace(/[)/]+$/, "").replace(/\/+$/, "") + "/";
+  return clean;
 }
