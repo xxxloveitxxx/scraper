@@ -1,24 +1,73 @@
 // background.js — service worker
 
+// ─────────────────────────────────────────────────────────────────────────────
+// KEEPALIVE
+// Chrome MV3 service workers are killed after ~30 s of no Chrome-API activity.
+// We fix this in two complementary ways:
+//   1. A global interval that pings chrome.storage every 20 s.
+//   2. Our sleep() helper splits waits into ≤20 s chunks and pings between them.
+// Together these ensure the SW is NEVER idle for more than 20 s while running.
+// ─────────────────────────────────────────────────────────────────────────────
+let _keepaliveTimer = null;
+
+function _ping() {
+  chrome.storage.session.set({ _ka: Date.now() }).catch(() => {});
+}
+
+function startKeepalive() {
+  _ping();
+  if (!_keepaliveTimer) _keepaliveTimer = setInterval(_ping, 20_000);
+}
+
+function stopKeepalive() {
+  if (_keepaliveTimer) { clearInterval(_keepaliveTimer); _keepaliveTimer = null; }
+}
+
+// Drop-in replacement for setTimeout-only sleep.
+// Every ≤20 s chunk ends with a Chrome-API call so the SW timer resets.
+async function sleep(ms) {
+  let remaining = ms;
+  while (remaining > 0) {
+    const chunk = Math.min(20_000, remaining);
+    await new Promise(r => setTimeout(r, chunk));
+    _ping();
+    remaining -= chunk;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STATE
+// We keep the live state in memory AND mirror the parts that matter to
+// chrome.storage.session so they survive a SW restart within the session.
+// ─────────────────────────────────────────────────────────────────────────────
 let state = {
   running: false,
   paused:  false,
   tabId:   null,
-  queue:   [],           // profile URLs left to scrape
-  results: [],           // scraped AgentProfile objects
-  seenUrls: new Set(),   // profile URLs already processed or in queue
-  failed:  [],           // URLs that failed
+  queue:   [],
+  results: [],
+  seenUrls: new Set(),
+  failed:  [],
   cities:  [],
   currentCity: null,
   totalLinks: 0,
   scraped: 0,
   failedCount: 0,
-  config: {
-    maxAgents: 30,
-    maxPages:  2,
-    delay:     4,
-  },
+  config: { maxAgents: 30, maxPages: 2, delay: 4 },
 };
+
+// Persist results + key counters after every profile so an export still works
+// even if the SW is restarted mid-run.
+async function persistResults() {
+  try {
+    await chrome.storage.session.set({
+      results:     state.results,
+      scraped:     state.scraped,
+      failedCount: state.failedCount,
+      totalLinks:  state.totalLinks,
+    });
+  } catch (_) {}
+}
 
 // ── Messages from popup ───────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -26,32 +75,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === "start") {
     startScraping(msg.config);
     sendResponse({ ok: true });
+    return true;
   }
 
   if (msg.action === "stop") {
     state.running = false;
     state.paused  = false;
+    stopKeepalive();
     sendState("Stopped by user.", "idle");
     sendResponse({ ok: true });
+    return true;
   }
 
   if (msg.action === "continue") {
-    // User solved CAPTCHA — reload the tab and resume
-    if (state.tabId) {
+    // User solved CAPTCHA — unpause; the waitForResume() loop will notice.
+    if (state.paused) {
       state.paused = false;
-      chrome.tabs.reload(state.tabId, {}, () => {
-        setTimeout(() => resumeAfterCaptcha(), 3000);
-      });
+      _ping(); // immediate ping so SW doesn't die right after unpausing
     }
     sendResponse({ ok: true });
+    return true;
   }
 
   if (msg.action === "getState") {
     sendResponse({ state: getPublicState() });
+    return true;
   }
 
   if (msg.action === "getResults") {
-    sendResponse({ results: state.results });
+    if (state.results.length > 0) {
+      sendResponse({ results: state.results });
+    } else {
+      // SW may have been restarted — restore from session storage
+      chrome.storage.session.get(["results"], (data) => {
+        sendResponse({ results: data.results || [] });
+      });
+      return true; // async
+    }
+    return true;
   }
 
   return true;
@@ -73,11 +134,11 @@ function getPublicState() {
 
 function sendState(text, dotClass) {
   chrome.runtime.sendMessage({
-    action:   "stateUpdate",
+    action: "stateUpdate",
     text,
     dotClass,
     stats: getPublicState(),
-  }).catch(() => {});  // popup may be closed
+  }).catch(() => {});
 }
 
 function log(text, level = "info") {
@@ -101,7 +162,8 @@ async function startScraping(config) {
     cities: config.cities,
   };
 
-  // Open a dedicated tab
+  startKeepalive(); // ← keep SW alive for the entire run
+
   const tab = await chrome.tabs.create({ url: "https://www.zillow.com", active: true });
   state.tabId = tab.id;
   await sleep(2500);
@@ -112,7 +174,7 @@ async function startScraping(config) {
     log(`Starting city: ${city}`, "info");
     sendState(`Scanning: ${city}`, "running");
 
-    // ── Phase 1: collect profile links for this city ──────────────────
+    // ── Phase 1: collect profile links ────────────────────────────────
     const slug = city.toLowerCase().replace(/, /g, "-").replace(/ /g, "-");
     const links = [];
 
@@ -123,25 +185,19 @@ async function startScraping(config) {
 
       const pageLinks = await fetchPageLinks(url);
       if (pageLinks === null) {
-        // blocked — wait for user
         log("List page blocked — solve CAPTCHA then click Continue", "warn");
         sendCaptchaAlert(`List page blocked for ${city}, page ${page}. Solve the CAPTCHA in the Zillow tab then click Continue.`);
         await waitForResume();
         if (!state.running) break;
-        // Retry same page once
         const retry = await fetchPageLinks(url);
         if (retry) {
           retry.forEach(l => {
-            if (!links.includes(l) && !state.seenUrls.has(l)) {
-              links.push(l);
-            }
+            if (!links.includes(l) && !state.seenUrls.has(l)) links.push(l);
           });
         }
       } else {
         pageLinks.forEach(l => {
-          if (!links.includes(l) && !state.seenUrls.has(l)) {
-            links.push(l);
-          }
+          if (!links.includes(l) && !state.seenUrls.has(l)) links.push(l);
         });
       }
 
@@ -151,7 +207,6 @@ async function startScraping(config) {
 
     const cityLinks = links.slice(0, config.maxAgents);
     cityLinks.forEach(l => state.seenUrls.add(l));
-    
     state.totalLinks += cityLinks.length;
     log(`Found ${cityLinks.length} profiles in ${city}`, "ok");
     sendState(`Scraping ${cityLinks.length} profiles in ${city}...`, "running");
@@ -164,12 +219,10 @@ async function startScraping(config) {
       const data = await fetchProfile(profileUrl);
 
       if (data === null) {
-        // blocked
         log("Profile blocked — solve CAPTCHA then click Continue", "warn");
         sendCaptchaAlert(`Blocked on: ${profileUrl}\nSolve the CAPTCHA in the Zillow tab then click Continue.`);
         await waitForResume();
         if (!state.running) break;
-        // retry once
         const retry = await fetchProfile(profileUrl);
         if (retry) {
           if (isLeadWorthy(retry)) {
@@ -196,21 +249,25 @@ async function startScraping(config) {
         }
       }
 
+      await persistResults(); // ← save after every profile
       sendState(`${state.scraped} scraped, ${state.failedCount} failed`, "running");
       await sleep(config.delay * 1000);
     }
   }
 
-  // Done
+  // ── Done ──────────────────────────────────────────────────────────────
   state.running = false;
+  stopKeepalive();
+
   if (state.tabId) {
     chrome.tabs.remove(state.tabId).catch(() => {});
     state.tabId = null;
   }
 
-  const msg = `Done! ${state.scraped} agents from ${state.cities.length} cities.`;
-  log(msg, "ok");
-  sendState(msg, "done");
+  await persistResults();
+  const doneMsg = `Done! ${state.scraped} agents from ${state.cities.length} cities.`;
+  log(doneMsg, "ok");
+  sendState(doneMsg, "done");
   chrome.runtime.sendMessage({ action: "done", resultsLen: state.results.length }).catch(() => {});
 }
 
@@ -218,10 +275,8 @@ async function startScraping(config) {
 async function fetchPageLinks(url) {
   await navigateTab(url);
   await sleep(3500);
-
   const resp = await sendToContent({ action: "extractLinks" });
-  if (!resp) return null;
-  if (resp.blocked) return null;
+  if (!resp || resp.blocked) return null;
   return resp.links || [];
 }
 
@@ -229,37 +284,41 @@ async function fetchPageLinks(url) {
 async function fetchProfile(url) {
   await navigateTab(url);
   await sleep(3500);
-
   const resp = await sendToContent({ action: "extractProfile" });
-  if (!resp) return null;
-  if (resp.blocked) return null;
+  if (!resp || resp.blocked) return null;
   return resp.data || null;
 }
 
-async function resumeAfterCaptcha() {
-  const resp = await sendToContent({ action: "ping" });
-  if (resp && !resp.blocked) {
-    log("CAPTCHA resolved, resuming...", "ok");
-    chrome.runtime.sendMessage({ action: "captchaCleared" }).catch(() => {});
-  }
-}
-
 // ── Navigate the shared tab ───────────────────────────────────────────────
+// Fixed: adds a 30 s timeout so orphaned listeners can't stack up;
+// uses a `resolved` flag so the listener fires exactly once.
 function navigateTab(url) {
   return new Promise((resolve) => {
     if (!state.tabId) { resolve(); return; }
-    chrome.tabs.update(state.tabId, { url }, () => {
-      chrome.tabs.onUpdated.addListener(function listener(tabId, info) {
-        if (tabId === state.tabId && info.status === "complete") {
-          chrome.tabs.onUpdated.removeListener(listener);
-          resolve();
-        }
-      });
+
+    let resolved = false;
+    const done = () => {
+      if (!resolved) {
+        resolved = true;
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+
+    const listener = (tabId, info) => {
+      if (tabId === state.tabId && info.status === "complete") done();
+    };
+
+    chrome.tabs.update(state.tabId, { url }, (tab) => {
+      if (chrome.runtime.lastError || !tab) { done(); return; }
+      chrome.tabs.onUpdated.addListener(listener);
+      // Safety timeout — never block forever
+      setTimeout(done, 30_000);
     });
   });
 }
 
-// ── Send message to content script in the scrape tab ─────────────────────
+// ── Send message to content script ───────────────────────────────────────
 function sendToContent(msg) {
   return new Promise((resolve) => {
     if (!state.tabId) { resolve(null); return; }
@@ -271,15 +330,20 @@ function sendToContent(msg) {
 }
 
 // ── Wait for user to click "Continue" after CAPTCHA ──────────────────────
+// Fixed: uses recursive setTimeout + _ping() so the SW stays alive the whole
+// time the user is interacting with the CAPTCHA page.
 function waitForResume() {
   state.paused = true;
   return new Promise((resolve) => {
-    const interval = setInterval(() => {
+    const check = () => {
+      _ping(); // ← Chrome API call — resets the 30 s kill timer
       if (!state.paused || !state.running) {
-        clearInterval(interval);
         resolve();
+      } else {
+        setTimeout(check, 2_000);
       }
-    }, 500);
+    };
+    setTimeout(check, 2_000);
   });
 }
 
@@ -288,26 +352,11 @@ function sendCaptchaAlert(msg) {
   sendState("⚠ CAPTCHA detected — waiting for you...", "blocked");
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 // ── Lead quality gate ─────────────────────────────────────────────────────
 function isLeadWorthy(data) {
   if (!data) return false;
-
-  const forSale = (data.for_sale_address || "").trim().toLowerCase();
+  const forSale   = (data.for_sale_address   || "").trim().toLowerCase();
   const recentSale = (data.recent_sale_address || "").trim().toLowerCase();
-
-  // STRICT RULE: If both addresses exist and are identical, DO NOT scrape.
-  if (forSale && recentSale && forSale === recentSale) {
-    return false; 
-  }
-
-  // Ensure we have at least some usable data (an email, or at least one address)
-  const hasEmail = !!data.email;
-  const hasForSale = !!data.for_sale_address;
-  const hasSold = !!data.recent_sale_address;
-
-  return hasEmail || hasForSale || hasSold;
+  if (forSale && recentSale && forSale === recentSale) return false;
+  return !!data.email || !!data.for_sale_address || !!data.recent_sale_address;
 }
