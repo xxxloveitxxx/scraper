@@ -223,10 +223,9 @@ function extractForSaleCount(md) {
 
 // ── Shared address helper ─────────────────────────────────────────────────
 
-// Refined regex to catch common street addresses while avoiding bio-like phrases
-// It expects: digits, followed by 1-3 capitalized or numeric words, and a street type.
-// This prevents matching long lowercase sentences commonly found in bios.
-const ADDRESS_PATTERN = /\b\d{1,5}\s+(?:(?:[A-Z0-9][A-Za-z0-9']{0,15})\s+){1,3}(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Pl|Place|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq|AVENUE|AVE|STREET|ST|ROAD|RD|BOULEVARD|BLVD|LANE|LN|DRIVE|DR|COURT|CT|CIRCLE|CIR|TRAIL|TRL|WAY|PL|PLACE|TERRACE|TER|HIGHWAY|HWY|PARKWAY|PKWY|SQUARE|SQ)\b/;
+// Refined regex to catch common street addresses while avoiding bio-like phrases.
+// Includes common street types and is case-insensitive for robustness.
+const ADDRESS_PATTERN = /\b\d{1,5}\s+(?:(?:[A-Z0-9][A-Za-z0-9']{0,20})\s+){1,4}(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Pl|Place|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq|Loop|Expy|Pike|Point|Pt|Way|Walk|Trce|Trace|Dr\.|St\.|Rd\.|Ave\.)\b/i;
 
 function _cleanAddress(str) {
   if (!str) return null;
@@ -234,29 +233,51 @@ function _cleanAddress(str) {
 }
 
 function extractForSaleAddress() {
-  // Try to find the specific "For Sale" or "Listings" section first
-  const sections = document.querySelectorAll('section, div[class*="section"]');
-  let searchArea = document.body;
+  const keywords = ["active listings", "for sale", "my listings"];
+
+  // Strategy 1: Try to find the specific "For Sale" or "Listings" section
+  const sections = document.querySelectorAll('section, div[class*="section"], [id*="listings"]');
+  let searchArea = null;
   for (const s of sections) {
     const txt = (s.innerText || "").toLowerCase();
-    if (txt.includes("active listings") || txt.includes("for sale")) {
+    if (keywords.some(k => txt.includes(k))) {
       searchArea = s;
       break;
     }
   }
 
-  // Strategy 1: Look for Zillow property links directly within relevant section
-  const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"]'));
-  for (const link of links) {
-    const text = _cleanAddress(link.innerText);
-    if (text && ADDRESS_PATTERN.test(text)) return text;
+  // If no section found, try looking for a heading
+  if (!searchArea) {
+    const headings = document.querySelectorAll('h1, h2, h3, h4, h5');
+    for (const h of headings) {
+      const txt = (h.innerText || "").toLowerCase();
+      if (keywords.some(k => txt.includes(k))) {
+        searchArea = h.parentElement;
+        break;
+      }
+    }
   }
 
-  // Strategy 2: Deep text search using regex across standard heading/address tags
-  // We exclude common bio-related containers
-  const allTextElements = searchArea.querySelectorAll("h3, h4, address, span, p");
+  if (searchArea) {
+    // Strategy 1a: Look for data-test attributes within the found section
+    const dataTestAddr = searchArea.querySelector('[data-test="property-card-addr"]');
+    if (dataTestAddr) {
+      const text = _cleanAddress(dataTestAddr.innerText);
+      if (text && ADDRESS_PATTERN.test(text)) return text;
+    }
+
+    // Strategy 1b: Look for Zillow property links directly within relevant section
+    const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"]'));
+    for (const link of links) {
+      const text = _cleanAddress(link.innerText);
+      if (text && ADDRESS_PATTERN.test(text)) return text;
+    }
+  }
+
+  // Strategy 2: Search globally if section not found, but avoiding bio
+  const searchGlobal = searchArea || document.body;
+  const allTextElements = searchGlobal.querySelectorAll("h3, h4, address, span, p, [data-test='property-card-addr']");
   for (const el of allTextElements) {
-    // Skip elements that are likely in the bio
     if (el.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
     
     const text = el.innerText || "";
@@ -269,46 +290,59 @@ function extractForSaleAddress() {
 
 function extractRecentSaleAddress(forSaleAddr) {
   const forSaleClean = (forSaleAddr || "").toLowerCase();
+  const keywords = ["past sales", "sold", "closed"];
 
-  // Try to find the "Past Sales" section specifically
-  const sections = document.querySelectorAll('section, div[class*="section"]');
-  let searchArea = document.body;
+  // Strategy 1: Try to find the "Past Sales" section specifically
+  const sections = document.querySelectorAll('section, div[class*="section"], [id*="past-sales"], [id*="sold"]');
+  let searchArea = null;
   for (const s of sections) {
     const txt = (s.innerText || "").toLowerCase();
-    if (txt.includes("past sales") || txt.includes("sold")) {
+    if (keywords.some(k => txt.includes(k))) {
       searchArea = s;
       break;
     }
   }
 
-  // Strategy 1: Look for "Sold" badges and grab the nearest property link
-  const cards = searchArea.querySelectorAll("article, [class*='property-card'], [class*='listing'], li");
-  for (const card of cards) {
-    const cardText = (card.innerText || "").toLowerCase();
-    
-    if (cardText.includes("sold") || cardText.includes("past sale") || cardText.includes("recently sold")) {
-      const links = card.querySelectorAll('a[href*="/homedetails/"]');
-      for (const link of links) {
-         const addr = _cleanAddress(link.innerText);
-         if (addr && ADDRESS_PATTERN.test(addr) && addr.toLowerCase() !== forSaleClean) {
-           return addr;
-         }
-      }
-      
-      // Fallback: search the raw text of the "Sold" card
-      const m = cardText.match(ADDRESS_PATTERN);
-      if (m) {
-         // Verify it's not in a bio container even if it matched a card-like element (rare but safe)
-         if (card.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
-
-         const addr = _cleanAddress(m[0]);
-         if (addr.toLowerCase() !== forSaleClean) return addr;
+  // Fallback to heading search
+  if (!searchArea) {
+    const headings = document.querySelectorAll('h1, h2, h3, h4, h5');
+    for (const h of headings) {
+      const txt = (h.innerText || "").toLowerCase();
+      if (keywords.some(k => txt.includes(k))) {
+        searchArea = h.parentElement;
+        break;
       }
     }
   }
 
-  // Strategy 2: Iterate through homedetails links in reverse (Sold properties are usually lower on the page)
-  const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"]')).reverse();
+  if (searchArea) {
+    // Strategy 1a: Look for "Sold" badges and grab the nearest property link
+    const cards = searchArea.querySelectorAll("article, [class*='property-card'], [class*='listing'], li, [data-test='property-card']");
+    for (const card of cards) {
+      const cardText = (card.innerText || "").toLowerCase();
+
+      if (cardText.includes("sold") || cardText.includes("past sale") || cardText.includes("recently sold")) {
+        const links = card.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"], [data-test="property-card-addr"]');
+        for (const link of links) {
+           const addr = _cleanAddress(link.innerText);
+           if (addr && ADDRESS_PATTERN.test(addr) && addr.toLowerCase() !== forSaleClean) {
+             return addr;
+           }
+        }
+
+        const m = cardText.match(ADDRESS_PATTERN);
+        if (m) {
+           if (card.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
+           const addr = _cleanAddress(m[0]);
+           if (addr.toLowerCase() !== forSaleClean) return addr;
+        }
+      }
+    }
+  }
+
+  // Strategy 2: Iterate through property links (Sold properties are usually lower on the page)
+  const searchGlobal = searchArea || document.body;
+  const links = Array.from(searchGlobal.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"], [data-test="property-card-addr"]')).reverse();
   for (const link of links) {
     if (link.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
     
