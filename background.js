@@ -267,7 +267,7 @@ async function startScraping(config) {
             log(`✓ Retry ok: ${retry.name || profileUrl}`, "ok");
           } else {
             state.failedCount++;
-            log(`⊘ Retry skipped (missing addresses): ${retry.name || profileUrl}`, "warn");
+            log(`⊘ Retry skipped (no email / valid address): ${retry.name || profileUrl}`, "warn");
           }
         } else {
           state.failed.push(profileUrl);
@@ -281,7 +281,7 @@ async function startScraping(config) {
           log(`✓ ${data.name || profileUrl}`, "ok");
         } else {
           state.failedCount++;
-          log(`⊘ Skipped (missing addresses): ${data.name || profileUrl}`, "warn");
+          log(`⊘ Skipped (no email / valid address): ${data.name || profileUrl}`, "warn");
         }
       }
 
@@ -391,12 +391,8 @@ function sendCaptchaAlert(msg) {
 // ── Lead quality gate ─────────────────────────────────────────────────────
 function isLeadWorthy(data) {
   if (!data) return false;
-  const forSale   = (data.for_sale_address   || "").trim().toLowerCase();
+  const forSale    = (data.for_sale_address   || "").trim().toLowerCase();
   const recentSale = (data.recent_sale_address || "").trim().toLowerCase();
-
-  // MUST have both addresses, and they MUST be different
-  if (!forSale || !recentSale) return false;
-  if (forSale === recentSale) return false;
-
-  return true;
+  if (forSale && recentSale && forSale === recentSale) return false;
+  return !!data.email || !!data.for_sale_address || !!data.recent_sale_address;
 }

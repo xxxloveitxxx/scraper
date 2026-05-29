@@ -15,20 +15,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ── Block / CAPTCHA detection ─────────────────────────────────────────────
+// Only full phrases that appear exclusively on real block/CAPTCHA pages.
+// Single words like "blocked", "robot", "captcha" are NOT used because they
+// appear in normal Zillow page text (street blocks, footer links, etc.).
 function isBlockPage() {
-  const body = document.body?.innerText?.toLowerCase() || "";
+  const body  = document.body?.innerText?.toLowerCase() || "";
   const title = document.title?.toLowerCase() || "";
   return (
+    body.includes("you have been blocked") ||
     body.includes("access denied") ||
-    body.includes("unusual traffic") ||
-    body.includes("captcha") ||
-    body.includes("robot") ||
-    body.includes("blocked") ||
+    body.includes("unusual traffic from your") ||
     body.includes("verify you are human") ||
+    body.includes("verify that you are human") ||
     body.includes("press and hold") ||
     body.includes("press & hold") ||
+    body.includes("complete the security check") ||
+    body.includes("human verification") ||
     title.includes("access denied") ||
-    title.includes("attention required")
+    title.includes("attention required") ||
+    title.includes("just a moment") ||
+    title.includes("security check")
   );
 }
 
@@ -43,7 +49,6 @@ function extractProfileLinks() {
       href.includes("zillow.com/profile/") ||
       (href.includes("zillow.com/professionals/") && href.includes("-agent/"))
     ) {
-      // Clean up URL
       let clean = href.split("?")[0].split("#")[0];
       clean = clean.replace(/[)/]+$/, "").replace(/\/+$/, "") + "/";
       if (clean.includes("zillow.com/")) {
@@ -65,10 +70,10 @@ function extractProfileLinks() {
 
 // ── Extract profile data from an agent profile page ───────────────────────
 function extractProfileData() {
-  const md = document.body?.innerText || "";
+  const md   = document.body?.innerText || "";
   const html = document.documentElement?.innerHTML || "";
 
-  const forSaleAddr = extractForSaleAddress();
+  const forSaleAddr    = extractForSaleAddress();
   const recentSaleAddr = extractRecentSaleAddress(forSaleAddr);
 
   return {
@@ -92,7 +97,6 @@ function extractProfileData() {
 }
 
 function extractName(md) {
-  // H1 tag is most reliable in the actual DOM
   const h1 = document.querySelector("h1");
   if (h1) {
     const name = h1.innerText.trim();
@@ -100,7 +104,6 @@ function extractName(md) {
       return name;
     }
   }
-  // Fallback: page title before " - "
   const title = document.title;
   const titleMatch = title.match(/^([^|–\-]+?)(?:\s*[-–|])/);
   if (titleMatch) return titleMatch[1].trim();
@@ -108,18 +111,16 @@ function extractName(md) {
 }
 
 function extractLocation(md) {
-  // Breadcrumb contains city link
   const breadcrumbs = document.querySelectorAll("nav a, ol a, [class*='breadcrumb'] a");
   for (const a of breadcrumbs) {
     const href = a.href || "";
     const m = href.match(/real-estate-agent-reviews\/([a-z-]+)-([a-z]{2})\//);
     if (m) {
-      const city = a.innerText.trim();
+      const city  = a.innerText.trim();
       const state = m[2].toUpperCase();
       return `${city}, ${state}`;
     }
   }
-  // Fallback regex
   const m = md.match(/([A-Z][a-z]{2,},\s*[A-Z]{2})(?:\s|$)/);
   return m ? m[1].trim() : null;
 }
@@ -172,12 +173,10 @@ function extractSpecialties(md) {
     "Property Management", "Vacation/Resort Properties",
     "Farm and Ranch", "Staging", "Title",
   ];
-
-  // Look for Specialties section in DOM
   const bodyText = document.body?.innerText || "";
   const specMatch = bodyText.match(/Specialties\s*\n([^\n]+)/);
   if (specMatch) {
-    const raw = specMatch[1];
+    const raw   = specMatch[1];
     const found = known.filter(s => raw.includes(s));
     return found.length ? found : [raw.trim()];
   }
@@ -197,17 +196,13 @@ function extractLanguages(md) {
 }
 
 function extractPhone(md, html) {
-  // Try DOM first — look for tel: links
   const telLink = document.querySelector("a[href^='tel:']");
-  if (telLink) {
-    return telLink.href.replace("tel:", "").trim();
-  }
+  if (telLink) return telLink.href.replace("tel:", "").trim();
   const m = md.match(/(\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4})/);
   return m ? m[1].trim() : null;
 }
 
 function extractEmail(md, html) {
-  // Try DOM first — mailto links
   const mailLink = document.querySelector("a[href^='mailto:']");
   if (mailLink) {
     return mailLink.href.replace("mailto:", "").split("?")[0].trim().toLowerCase();
@@ -221,135 +216,142 @@ function extractForSaleCount(md) {
   return m ? parseInt(m[1].replace(/,/g, "")) : null;
 }
 
-// ── Shared address helper ─────────────────────────────────────────────────
+// ── Shared address helpers ────────────────────────────────────────────────
 
-// Refined regex to catch common street addresses while avoiding bio-like phrases.
-// Includes common street types and is case-insensitive for robustness.
-const ADDRESS_PATTERN = /\b\d{1,5}\s+(?:(?:[A-Z0-9][A-Za-z0-9']{0,20})\s+){1,4}(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Pl|Place|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq|Loop|Expy|Pike|Point|Pt|Way|Walk|Trce|Trace|Dr\.|St\.|Rd\.|Ave\.)\b/i;
+// Street address regex — digits then 1-3 words then a recognised street type.
+const ADDRESS_PATTERN = /\b\d{1,5}\s+(?:[A-Za-z0-9'][A-Za-z0-9'\s]{0,40}?)(?:Avenue|Ave|Street|St|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Circle|Cir|Trail|Trl|Way|Place|Pl|Terrace|Ter|Highway|Hwy|Parkway|Pkwy|Square|Sq)\b/i;
+
+// Noise tokens that can appear before the real house number
+// e.g. "3 bds 2 ba 1,200 sqft 1010 S Ocean Blvd"
+const NOISE_PREFIX = /^(?:[\d,]+\s+(?:sqft|sq\.?\s*ft\.?|beds?|bds?|baths?|bas?|acres?|units?|stories|story|floors?|garage|car|spaces?)[,\s]+)+/i;
+
+// Zillow corporate addresses — always wrong when extracted as an agent listing
+const BLOCKED_ADDRESSES = [
+  "2600 michelson drive",
+  "1301 second avenue",
+  "333 108th avenue",
+];
 
 function _cleanAddress(str) {
   if (!str) return null;
-  return str.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+  return str.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function extractForSaleAddress() {
-  const keywords = ["active listings", "for sale", "my listings"];
+// Strip noise prefix then validate; return null if blocklisted or empty.
+function _sanitize(str) {
+  if (!str) return null;
+  const stripped = str.replace(NOISE_PREFIX, "").trim();
+  const clean    = _cleanAddress(stripped);
+  if (!clean) return null;
+  const lower = clean.toLowerCase();
+  if (BLOCKED_ADDRESSES.some(b => lower.startsWith(b) || lower.includes(b))) return null;
+  return clean;
+}
 
-  // Strategy 1: Try to find the specific "For Sale" or "Listings" section
-  const sections = document.querySelectorAll('section, div[class*="section"], [id*="listings"]');
-  let searchArea = null;
-  for (const s of sections) {
+// Return the best (longest, clean) address match from a text string.
+function _bestMatch(text) {
+  if (!text) return null;
+  const re  = new RegExp(ADDRESS_PATTERN.source, "gi");
+  let best  = null;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const clean = _sanitize(m[0]);
+    if (clean && (!best || clean.length > best.length)) best = clean;
+  }
+  return best;
+}
+
+// PRIMARY: parse the address directly out of a Zillow homedetails URL slug.
+// Zillow URLs look like: /homedetails/1010-S-Ocean-Blvd-Pompano-Beach-FL-33062/zpid/
+// The slug always has the address before the city/state/zip — and it's clean.
+function _addressFromUrl(href) {
+  if (!href) return null;
+  const m = href.match(/\/homedetails\/([^/?#]+)/);
+  if (!m) return null;
+  // Decode percent-encoding, replace hyphens with spaces
+  const slug = decodeURIComponent(m[1]).replace(/-/g, " ");
+  return _bestMatch(slug) || null;
+}
+
+// Collect all homedetails links from a container, deduped by href.
+function _homedetailsLinks(container) {
+  return Array.from(container.querySelectorAll('a[href*="/homedetails/"]'));
+}
+
+// ── For-Sale address extraction ───────────────────────────────────────────
+function extractForSaleAddress() {
+  // Try to narrow to the For Sale / Active Listings section
+  let searchArea = document.body;
+  for (const s of document.querySelectorAll("section, [class*='section'], [data-testid]")) {
     const txt = (s.innerText || "").toLowerCase();
-    if (keywords.some(k => txt.includes(k))) {
+    if (txt.includes("active listings") || txt.includes("for sale")) {
       searchArea = s;
       break;
     }
   }
 
-  // If no section found, try looking for a heading
-  if (!searchArea) {
-    const headings = document.querySelectorAll('h1, h2, h3, h4, h5');
-    for (const h of headings) {
-      const txt = (h.innerText || "").toLowerCase();
-      if (keywords.some(k => txt.includes(k))) {
-        searchArea = h.parentElement;
-        break;
-      }
-    }
+  // Strategy 1: Parse address from homedetails URL slug (most reliable)
+  for (const link of _homedetailsLinks(searchArea)) {
+    const addr = _addressFromUrl(link.href);
+    if (addr) return addr;
   }
 
-  if (searchArea) {
-    // Strategy 1a: Look for data-test attributes within the found section
-    const dataTestAddr = searchArea.querySelector('[data-test="property-card-addr"]');
-    if (dataTestAddr) {
-      const text = _cleanAddress(dataTestAddr.innerText);
-      if (text && ADDRESS_PATTERN.test(text)) return text;
-    }
-
-    // Strategy 1b: Look for Zillow property links directly within relevant section
-    const links = Array.from(searchArea.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"]'));
-    for (const link of links) {
-      const text = _cleanAddress(link.innerText);
-      if (text && ADDRESS_PATTERN.test(text)) return text;
-    }
+  // Strategy 2: Try link innerText (card text contains address among other info)
+  for (const link of _homedetailsLinks(searchArea)) {
+    const addr = _bestMatch(link.innerText || "");
+    if (addr) return addr;
   }
 
-  // Strategy 2: Search globally if section not found, but avoiding bio
-  const searchGlobal = searchArea || document.body;
-  const allTextElements = searchGlobal.querySelectorAll("h3, h4, address, span, p, [data-test='property-card-addr']");
-  for (const el of allTextElements) {
+  // Strategy 3: Text elements in the section (h3, h4, span, p, address)
+  for (const el of searchArea.querySelectorAll("h3, h4, address, span, p")) {
     if (el.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
-    
-    const text = el.innerText || "";
-    const m = text.match(ADDRESS_PATTERN);
-    if (m) return _cleanAddress(m[0]);
+    const addr = _bestMatch(el.innerText || "");
+    if (addr) return addr;
   }
-  
+
   return null;
 }
 
+// ── Recent-sale address extraction ────────────────────────────────────────
 function extractRecentSaleAddress(forSaleAddr) {
   const forSaleClean = (forSaleAddr || "").toLowerCase();
-  const keywords = ["past sales", "sold", "closed"];
 
-  // Strategy 1: Try to find the "Past Sales" section specifically
-  const sections = document.querySelectorAll('section, div[class*="section"], [id*="past-sales"], [id*="sold"]');
-  let searchArea = null;
-  for (const s of sections) {
+  // Try to narrow to the Past Sales / Sold section
+  let searchArea = document.body;
+  for (const s of document.querySelectorAll("section, [class*='section'], [data-testid]")) {
     const txt = (s.innerText || "").toLowerCase();
-    if (keywords.some(k => txt.includes(k))) {
+    if (txt.includes("past sales") || txt.includes("sold")) {
       searchArea = s;
       break;
     }
   }
 
-  // Fallback to heading search
-  if (!searchArea) {
-    const headings = document.querySelectorAll('h1, h2, h3, h4, h5');
-    for (const h of headings) {
-      const txt = (h.innerText || "").toLowerCase();
-      if (keywords.some(k => txt.includes(k))) {
-        searchArea = h.parentElement;
-        break;
-      }
+  // Strategy 1: Cards explicitly labelled "Sold" / "Past Sale"
+  for (const card of searchArea.querySelectorAll("article, [class*='property-card'], [class*='listing'], li")) {
+    const cardText = (card.innerText || "").toLowerCase();
+    if (!cardText.includes("sold") && !cardText.includes("past sale") && !cardText.includes("recently sold")) continue;
+    if (card.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
+
+    for (const link of card.querySelectorAll('a[href*="/homedetails/"]')) {
+      const addr = _addressFromUrl(link.href);
+      if (addr && addr.toLowerCase() !== forSaleClean) return addr;
+    }
+    for (const link of card.querySelectorAll('a[href*="/homedetails/"]')) {
+      const addr = _bestMatch(link.innerText || "");
+      if (addr && addr.toLowerCase() !== forSaleClean) return addr;
     }
   }
 
-  if (searchArea) {
-    // Strategy 1a: Look for "Sold" badges and grab the nearest property link
-    const cards = searchArea.querySelectorAll("article, [class*='property-card'], [class*='listing'], li, [data-test='property-card']");
-    for (const card of cards) {
-      const cardText = (card.innerText || "").toLowerCase();
-
-      if (cardText.includes("sold") || cardText.includes("past sale") || cardText.includes("recently sold")) {
-        const links = card.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"], [data-test="property-card-addr"]');
-        for (const link of links) {
-           const addr = _cleanAddress(link.innerText);
-           if (addr && ADDRESS_PATTERN.test(addr) && addr.toLowerCase() !== forSaleClean) {
-             return addr;
-           }
-        }
-
-        const m = cardText.match(ADDRESS_PATTERN);
-        if (m) {
-           if (card.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
-           const addr = _cleanAddress(m[0]);
-           if (addr.toLowerCase() !== forSaleClean) return addr;
-        }
-      }
-    }
-  }
-
-  // Strategy 2: Iterate through property links (Sold properties are usually lower on the page)
-  const searchGlobal = searchArea || document.body;
-  const links = Array.from(searchGlobal.querySelectorAll('a[href*="/homedetails/"], [data-test="property-card-link"], [data-test="property-card-addr"]')).reverse();
+  // Strategy 2: All homedetails links in reverse (sold listings appear lower)
+  const links = _homedetailsLinks(searchArea).reverse();
   for (const link of links) {
     if (link.closest('[id*="about"], [class*="about"], [class*="bio"]')) continue;
-    
-    const text = _cleanAddress(link.innerText);
-    if (text && ADDRESS_PATTERN.test(text) && text.toLowerCase() !== forSaleClean) {
-      return text;
-    }
+    // URL slug first
+    const addrUrl = _addressFromUrl(link.href);
+    if (addrUrl && addrUrl.toLowerCase() !== forSaleClean) return addrUrl;
+    // Then card text
+    const addrText = _bestMatch(link.innerText || "");
+    if (addrText && addrText.toLowerCase() !== forSaleClean) return addrText;
   }
 
   return null;
