@@ -9,6 +9,7 @@
 // Together these ensure the SW is NEVER idle for more than 20 s while running.
 // ─────────────────────────────────────────────────────────────────────────────
 let _keepaliveTimer = null;
+let popupWindowId = null;
 
 function _ping() {
   chrome.storage.session.set({ _ka: Date.now() }).catch(() => {});
@@ -68,6 +69,41 @@ async function persistResults() {
     });
   } catch (_) {}
 }
+
+// ── Window Management ─────────────────────────────────────────────────────
+chrome.action.onClicked.addListener(async () => {
+  const popupUrl = chrome.runtime.getURL("popup.html");
+  
+  // Try to find an existing window with our URL
+  const windows = await chrome.windows.getAll({ populate: true });
+  const existingWindow = windows.find(win => 
+    win.tabs && win.tabs.some(tab => tab.url === popupUrl)
+  );
+
+  if (existingWindow) {
+    popupWindowId = existingWindow.id;
+    chrome.windows.update(popupWindowId, { focused: true });
+  } else {
+    createPopupWindow();
+  }
+});
+
+function createPopupWindow() {
+  chrome.windows.create({
+    url: chrome.runtime.getURL("popup.html"),
+    type: "popup",
+    width: 420,
+    height: 700
+  }, (window) => {
+    popupWindowId = window.id;
+  });
+}
+
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (windowId === popupWindowId) {
+    popupWindowId = null;
+  }
+});
 
 // ── Messages from popup ───────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
