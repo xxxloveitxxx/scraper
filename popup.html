@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Xpiper Lead Scraper</title>
+  <title>Xpiper Home Services Scraper</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -258,21 +258,23 @@
 <body>
 
   <div class="header">
-    <h1>⚡ Xpiper Scraper</h1>
-    <span class="version">v1.1</span>
+    <h1>&#9889; Xpiper Home Services</h1>
+    <span class="version">v2.0</span>
   </div>
 
   <!-- Config -->
   <div class="section">
     <label>Cities (one per line)</label>
-    <textarea id="cities" placeholder="Tampa, FL&#10;Miami, FL&#10;Austin, TX"></textarea>
+    <textarea id="cities" placeholder="Tampa, FL
+Miami, FL
+Austin, TX"></textarea>
   </div>
 
   <div class="section">
     <div class="row">
       <div class="field">
-        <label>Max agents per city</label>
-        <input type="number" id="maxAgents" value="30" min="1" max="200">
+        <label>Max businesses per city</label>
+        <input type="number" id="maxBusinesses" value="30" min="1" max="200">
       </div>
       <div class="field">
         <label>Pages per city</label>
@@ -301,7 +303,7 @@
       </div>
       <div class="stat">
         <div class="stat-val" id="stat-links">0</div>
-        <div class="stat-label">Profiles found</div>
+        <div class="stat-label">Found</div>
       </div>
       <div class="stat">
         <div class="stat-val" id="stat-scraped">0</div>
@@ -316,19 +318,19 @@
 
   <!-- Captcha alert -->
   <div id="captcha-alert">
-    <div class="alert-title">🔒 CAPTCHA / Block Detected</div>
+    <div class="alert-title">&#128274; CAPTCHA / Block Detected</div>
     <div class="alert-body" id="captcha-msg">
-      Zillow blocked the request. Please switch to the Zillow tab,
+      Google blocked the request. Please switch to the Maps tab,
       solve the CAPTCHA, then click Continue below.
     </div>
-    <button class="btn btn-warning btn-sm" id="btn-continue">▶ Continue after solving</button>
+    <button class="btn btn-warning btn-sm" id="btn-continue">&#9654; Continue after solving</button>
   </div>
 
   <!-- Action buttons -->
   <div class="btn-row">
-    <button class="btn btn-primary" id="btn-start">▶ Start Scraping</button>
-    <button class="btn btn-danger btn-sm" id="btn-stop" disabled>■ Stop</button>
-    <button class="btn btn-success btn-sm" id="btn-export" disabled>↓ CSV</button>
+    <button class="btn btn-primary" id="btn-start">&#9654; Start Scraping</button>
+    <button class="btn btn-danger btn-sm" id="btn-stop" disabled>&#9632; Stop</button>
+    <button class="btn btn-success btn-sm" id="btn-export" disabled>&#8595; CSV</button>
   </div>
 
   <!-- Log -->

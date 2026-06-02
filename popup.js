@@ -1,4 +1,4 @@
-// popup.js
+// popup.js - Home Services Lead Scraper
 
 const $ = id => document.getElementById(id);
 
@@ -21,11 +21,11 @@ const statScraped = $("stat-scraped");
 const statFailed  = $("stat-failed");
 
 // ── Load saved config ─────────────────────────────────────────────────────
-chrome.storage.local.get(["cities", "maxAgents", "maxPages", "delay"], (data) => {
-  if (data.cities)    $("cities").value     = data.cities;
-  if (data.maxAgents) $("maxAgents").value  = data.maxAgents;
-  if (data.maxPages)  $("maxPages").value   = data.maxPages;
-  if (data.delay)     $("delay").value      = data.delay;
+chrome.storage.local.get(["cities", "maxBusinesses", "maxPages", "delay"], (data) => {
+  if (data.cities)         $("cities").value         = data.cities;
+  if (data.maxBusinesses)  $("maxBusinesses").value  = data.maxBusinesses;
+  if (data.maxPages)       $("maxPages").value        = data.maxPages;
+  if (data.delay)          $("delay").value           = data.delay;
 });
 
 // ── Sync state from background on open ───────────────────────────────────
@@ -45,17 +45,17 @@ btnStart.addEventListener("click", () => {
 
   const config = {
     cities,
-    maxAgents: parseInt($("maxAgents").value) || 30,
-    maxPages:  parseInt($("maxPages").value)  || 2,
-    delay:     parseInt($("delay").value)     || 4,
+    maxBusinesses: parseInt($("maxBusinesses").value) || 30,
+    maxPages:      parseInt($("maxPages").value)     || 2,
+    delay:         parseInt($("delay").value)          || 4,
   };
 
   // Save config
   chrome.storage.local.set({
-    cities:    $("cities").value,
-    maxAgents: config.maxAgents,
-    maxPages:  config.maxPages,
-    delay:     config.delay,
+    cities:         $("cities").value,
+    maxBusinesses:   config.maxBusinesses,
+    maxPages:        config.maxPages,
+    delay:           config.delay,
   });
 
   setUI("running");
@@ -91,7 +91,7 @@ btnExport.addEventListener("click", () => {
       return;
     }
     downloadCSV(resp.results);
-    addLog(`Exported ${resp.results.length} agents to CSV.`, "ok");
+    addLog(`Exported ${resp.results.length} businesses to CSV.`, "ok");
   });
 });
 
@@ -177,7 +177,7 @@ function addLog(text, level = "info") {
   const line = document.createElement("div");
   line.className = "log-" + level;
   const time = new Date().toLocaleTimeString("en", { hour12: false });
-  line.textContent = `[${time}] ${text}`;
+  line.textContent = "[" + time + "] " + text;
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
   // Keep last 200 lines
@@ -189,23 +189,23 @@ function clearLog() {
 }
 
 // ── CSV Export ────────────────────────────────────────────────────────────
-function downloadCSV(agents) {
+function downloadCSV(businesses) {
   const fields = [
-    "name", "profile_url", "location", "brokerage",
-    "rating", "review_count", "years_experience", "recent_sales",
-    "for_sale_count", "for_sale_address", "recent_sale_address",
-    "phone", "email", "specialties", "languages", "scraped_at",
+    "name", "category", "rating", "review_count", "address", "phone",
+    "email", "emails", "website", "social_links", "services", "services_list",
+    "about_text", "owner_name", "founded_year", "license_info", "service_areas",
+    "recent_reviewers", "photos_count", "business_hours", "city", "profile_url", "scraped_at",
   ];
 
   const escape = v => {
     if (v === null || v === undefined) return "";
     const str = Array.isArray(v) ? v.join(" | ") : String(v);
-    return '"' + str.replace(/"/g, '""') + '"';
+    return "\"" + str.replace(/"/g, "\"\"") + "\"";
   };
 
   const header = fields.join(",");
-  const rows = agents.map(a =>
-    fields.map(f => escape(a[f])).join(",")
+  const rows = businesses.map(b =>
+    fields.map(f => escape(b[f])).join(",")
   );
 
   const csv = [header, ...rows].join("\n");
@@ -215,7 +215,7 @@ function downloadCSV(agents) {
   const ts   = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
   chrome.downloads.download({
     url,
-    filename: `xpiper_leads_${ts}.csv`,
+    filename: "home_services_leads_" + ts + ".csv",
     saveAs: false,
   });
 }

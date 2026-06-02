@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Xpiper Lead Scraper",
-  "version": "1.1",
-  "description": "Scrape Zillow agent profiles into CSV leads",
+  "name": "Xpiper Home Services Scraper",
+  "version": "2.1",
+  "description": "Scrape Google Maps & business websites for home service leads with emails",
   "permissions": [
     "activeTab",
     "scripting",
@@ -11,7 +11,10 @@
     "downloads"
   ],
   "host_permissions": [
-    "https://www.zillow.com/*"
+    "https://www.google.com/*",
+    "https://maps.google.com/*",
+    "https://*.google.com/*",
+    "<all_urls>"
   ],
   "action": {
     "default_icon": {
@@ -22,7 +25,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.zillow.com/*"],
+      "matches": ["https://www.google.com/*", "https://maps.google.com/*", "https://*.google.com/maps/*", "<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
