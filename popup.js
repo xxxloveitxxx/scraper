@@ -190,11 +190,18 @@ function clearLog() {
 
 // ── CSV Export ────────────────────────────────────────────────────────────
 function downloadCSV(businesses) {
+  // Only export businesses that have an email address
+  const businessesWithEmail = businesses.filter(b => b.email || (b.emails && b.emails.length > 0));
+  
+  if (businessesWithEmail.length === 0) {
+    addLog("No leads with email to export.", "warn");
+    return;
+  }
+  
   const fields = [
     "name", "category", "rating", "review_count", "address", "phone",
-    "email", "emails", "website", "social_links", "services", "services_list",
-    "about_text", "owner_name", "founded_year", "license_info", "service_areas",
-    "recent_reviewers", "photos_count", "business_hours", "city", "profile_url", "scraped_at",
+    "email", "twitter_handle", "website", "services", "about", "hours",
+    "profile_url", "scraped_at",
   ];
 
   const escape = v => {
@@ -204,9 +211,16 @@ function downloadCSV(businesses) {
   };
 
   const header = fields.join(",");
-  const rows = businesses.map(b =>
-    fields.map(f => escape(b[f])).join(",")
-  );
+  const rows = businessesWithEmail.map(b => {
+    // Use first email as primary, twitter only if email exists
+    const primaryEmail = b.email || (b.emails && b.emails[0]) || "";
+    
+    return fields.map(f => {
+      if (f === "email") return escape(primaryEmail);
+      if (f === "twitter_handle") return escape(b.twitter_handle || "");
+      return escape(b[f]);
+    }).join(",");
+  });
 
   const csv = [header, ...rows].join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
@@ -218,4 +232,6 @@ function downloadCSV(businesses) {
     filename: "home_services_leads_" + ts + ".csv",
     saveAs: false,
   });
+  
+  addLog("Exported " + businessesWithEmail.length + " leads (email only) to CSV.", "ok");
 }

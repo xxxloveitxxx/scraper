@@ -65,12 +65,11 @@ function getPublicState() {
 function sendState(text, dotClass) { chrome.runtime.sendMessage({ action: 'stateUpdate', text, dotClass, stats: getPublicState() }).catch(() => {}); }
 function log(text, level) { chrome.runtime.sendMessage({ action: 'log', text, level }).catch(() => {}); }
 
-// Check if business has contact info (email or social)
+// Check if business has email (required for export)
 function hasContactInfo(data) {
+  // Only count email as valid contact - no social media without email
   if (data.email) return true;
   if (data.emails && data.emails.length > 0) return true;
-  if (data.social_links && data.social_links.length > 0) return true;
-  if (data.twitter_handle) return true;
   return false;
 }
 
@@ -165,19 +164,27 @@ async function startScraping(config) {
       continue;
     }
     
-    if (!data.website) {
+    // Check if there's a website (primary or from website_urls)
+    const websiteUrls = data.website_urls || [];
+    const hasWebsite = data.website || websiteUrls.length > 0;
+    
+    if (!hasWebsite) {
       state.noContactCount++;
       log('P2 SKIP: No website for ' + data.name, 'warn');
       continue;
     }
     
-    log('P2: Scraping ' + data.website, 'info');
+    // Log which URLs we're going to scrape
+    const urlsToScrape = [data.website, ...websiteUrls].filter(Boolean);
+    log('P2: Scraping ' + data.name + ' from ' + urlsToScrape.length + ' URL(s)', 'info');
     sendState('Phase 2: ' + (i + 1) + '/' + state.results.length + ' - ' + data.name, 'running');
     
-    const websiteData = await scrapeWebsite(data.website);
+    const websiteData = await scrapeWebsite(data.website, websiteUrls);
     
     if (websiteData) {
       let found = false;
+      
+      // Store email (required for export)
       if (websiteData.email) {
         data.email = websiteData.email;
         emailCount++;
@@ -188,22 +195,22 @@ async function startScraping(config) {
         data.emails = websiteData.emails;
         found = true;
       }
-      if (websiteData.social_links?.length > 0) {
-        data.social_links = websiteData.social_links;
-        found = true;
-      }
-      if (websiteData.twitter_handle) {
+      
+      // Only store Twitter if email was also found
+      if (websiteData.twitter_handle && (data.email || websiteData.email)) {
         data.twitter_handle = websiteData.twitter_handle;
-        found = true;
         log('P2: ' + data.name + ' Twitter = ' + data.twitter_handle, 'ok');
       }
+      
+      // Don't store social_links (not needed in export)
+      
       if (!found) {
         state.noContactCount++;
-        log('P2: No contact at ' + data.website, 'warn');
+        log('P2: No contact found for ' + data.name, 'warn');
       }
     } else {
       state.noContactCount++;
-      log('P2: Failed to load ' + data.website, 'warn');
+      log('P2: No contact found for ' + data.name, 'warn');
     }
     
     await persistResults();
@@ -242,8 +249,16 @@ async function fetchPageLinks(url) {
 
 async function fetchBusiness(url) {
   await navigateTab(url);
-  await sleep(4000);
+  await sleep(6000); // Wait for Google Maps to load all content
   const resp = await sendToContent({ action: 'extractProfile' });
+  
+  // Debug: log what we got from content script
+  if (resp && resp.data) {
+    log('P1: Got profile - name: ' + resp.data.name + ', website: ' + resp.data.website, 'info');
+  } else {
+    log('P1: No response from content script for ' + url, 'warn');
+  }
+  
   return (resp && !resp.blocked) ? resp.data || null : null;
 }
 
@@ -271,50 +286,128 @@ function sendToContent(msg) {
   });
 }
 
-async function scrapeWebsite(url) {
-  if (!url || !state.webTabId) return null;
+async function scrapeWebsite(url, allUrls = []) {
+  if (!url && (!allUrls || allUrls.length === 0)) {
+    log('P2: No URL or allUrls provided', 'warn');
+    return null;
+  }
+  
+  // Use allUrls if provided, otherwise just use url
+  const urlsToTry = (allUrls && allUrls.length > 0) ? allUrls : (url ? [url] : []);
+  
   try {
-    url = normalizeUrl(url);
-    
-    // Try main page
-    await navigateWebTab(url);
-    await sleep(5000);
-    let resp = await sendToWebTab({ action: 'extractWebsiteData' });
-    if (resp && resp.data) return resp.data;
-    
-    // Try contact pages
-    const pages = ['/contact', '/contact-us', '/about', '/about-us', '/contact.html', '/contact.php'];
-    for (const p of pages) {
-      await navigateWebTab(url + p);
-      await sleep(4000);
-      resp = await sendToWebTab({ action: 'extractWebsiteData' });
-      if (resp && resp.data && (resp.data.email || resp.data.social_links?.length > 0)) {
+    // Try each URL
+    for (const urlToTry of urlsToTry) {
+      if (!state.running) break;
+      
+      const urlToScrape = normalizeUrl(urlToTry);
+      if (!urlToScrape) continue;
+      
+      log('P2: Scraping: ' + urlToScrape, 'info');
+      
+      // Navigate to the website
+      await navigateWebTab(urlToScrape);
+      await sleep(3000);
+      
+      // Inject content script
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: state.webTabId },
+          files: ['content.js']
+        });
+        await sleep(500);
+      } catch (e) { 
+        log('P2: Script injection failed: ' + e.message, 'warn');
+      }
+      
+      // Try main page
+      let resp = await sendToWebTab({ action: 'extractWebsiteData' });
+      
+      // Only consider it found if there's an email
+      const hasEmail = resp && resp.data && (resp.data.email || (resp.data.emails && resp.data.emails.length > 0));
+      
+      if (hasEmail) {
+        log('P2: Found email at ' + urlToScrape, 'ok');
         return resp.data;
       }
+      
+      // If no email on main page, try contact pages
+      if (resp && resp.data) {
+        const baseUrl = urlToScrape.replace(/\/[^\/]*$/, ''); // Remove last path segment
+        const contactPages = ['/contact', '/contact-us', '/about', '/about-us'];
+        
+        for (const p of contactPages) {
+          if (!state.running) break;
+          log('P2: Trying contact page: ' + baseUrl + p, 'info');
+          await navigateWebTab(baseUrl + p);
+          await sleep(2000);
+          
+          try {
+            await chrome.scripting.executeScript({
+              target: { tabId: state.webTabId },
+              files: ['content.js']
+            });
+            await sleep(500);
+          } catch (e) {}
+          
+          resp = await sendToWebTab({ action: 'extractWebsiteData' });
+          
+          const contactHasEmail = resp && resp.data && (resp.data.email || (resp.data.emails && resp.data.emails.length > 0));
+          if (contactHasEmail) {
+            log('P2: Found email on ' + p, 'ok');
+            return resp.data;
+          }
+        }
+      }
     }
+    
     return null;
-  } catch (e) { return null; }
+  } catch (e) { 
+    log('P2: Exception: ' + e.message, 'warn');
+    return null; 
+  }
 }
 
 function navigateWebTab(url) {
   return new Promise((resolve) => {
-    if (!state.webTabId) { resolve(); return; }
+    if (!state.webTabId) { 
+      log('navigateWebTab: No webTabId', 'warn');
+      resolve(); 
+      return; 
+    }
     let resolved = false;
     const done = () => { if (!resolved) { resolved = true; chrome.tabs.onUpdated.removeListener(listener); resolve(); } };
     const listener = (tabId, info) => { if (tabId === state.webTabId && info.status === 'complete') done(); };
+    log('navigateWebTab: Updating tab to ' + url, 'info');
     chrome.tabs.update(state.webTabId, { url }, (tab) => {
-      if (chrome.runtime.lastError || !tab) { done(); return; }
+      if (chrome.runtime.lastError || !tab) { 
+        log('navigateWebTab: Tab update failed - ' + (chrome.runtime.lastError?.message || 'no tab'), 'warn');
+        done(); 
+        return; 
+      }
       chrome.tabs.onUpdated.addListener(listener);
-      setTimeout(done, 30000);
+      // Shorter timeout to avoid getting stuck
+      setTimeout(() => {
+        log('navigateWebTab: Timeout reached for ' + url, 'info');
+        done(); 
+      }, 20000);
     });
   });
 }
 
 function sendToWebTab(msg) {
   return new Promise((resolve) => {
-    if (!state.webTabId) { resolve(null); return; }
+    if (!state.webTabId) { 
+      log('sendToWebTab: No webTabId', 'warn');
+      resolve(null); 
+      return; 
+    }
     chrome.tabs.sendMessage(state.webTabId, msg, (resp) => {
-      if (chrome.runtime.lastError) { resolve(null); return; }
+      if (chrome.runtime.lastError) { 
+        log('sendToWebTab: Runtime error - ' + chrome.runtime.lastError.message, 'warn');
+        resolve(null); 
+        return; 
+      }
       resolve(resp);
     });
   });
