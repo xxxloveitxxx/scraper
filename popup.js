@@ -201,6 +201,7 @@ function downloadCSV(businesses) {
   const fields = [
     "name", "category", "rating", "review_count", "address", "phone",
     "email", "twitter_handle", "website", "services", "about", "hours",
+    "service_area", "owner", "years_in_business",
     "profile_url", "scraped_at",
   ];
 

@@ -184,25 +184,25 @@ async function startScraping(config) {
     if (websiteData) {
       let found = false;
       
-      // Store email (required for export)
-      if (websiteData.email) {
-        data.email = websiteData.email;
+      // Store email (required for export) - check both primary email and emails array
+      const emailToSave = websiteData.email || (websiteData.emails && websiteData.emails[0]) || null;
+      
+      if (emailToSave) {
+        data.email = emailToSave;
+        data.emails = websiteData.emails || [emailToSave];
         emailCount++;
         found = true;
-        log('P2: ' + data.name + ' email = ' + data.email, 'ok');
-      }
-      if (websiteData.emails?.length > 0) {
+        log('P2: ' + data.name + ' email = ' + emailToSave, 'ok');
+      } else if (websiteData.emails?.length > 0) {
         data.emails = websiteData.emails;
         found = true;
       }
       
       // Only store Twitter if email was also found
-      if (websiteData.twitter_handle && (data.email || websiteData.email)) {
+      if (websiteData.twitter_handle && emailToSave) {
         data.twitter_handle = websiteData.twitter_handle;
         log('P2: ' + data.name + ' Twitter = ' + data.twitter_handle, 'ok');
       }
-      
-      // Don't store social_links (not needed in export)
       
       if (!found) {
         state.noContactCount++;
@@ -307,7 +307,7 @@ async function scrapeWebsite(url, allUrls = []) {
       
       // Navigate to the website
       await navigateWebTab(urlToScrape);
-      await sleep(3000);
+      await sleep(2000);
       
       // Inject content script
       try {
@@ -315,7 +315,7 @@ async function scrapeWebsite(url, allUrls = []) {
           target: { tabId: state.webTabId },
           files: ['content.js']
         });
-        await sleep(500);
+        await sleep(300);
       } catch (e) { 
         log('P2: Script injection failed: ' + e.message, 'warn');
       }
@@ -331,23 +331,31 @@ async function scrapeWebsite(url, allUrls = []) {
         return resp.data;
       }
       
-      // If no email on main page, try contact pages
+      // If no email on main page, try contact pages (with faster retries)
       if (resp && resp.data) {
-        const baseUrl = urlToScrape.replace(/\/[^\/]*$/, ''); // Remove last path segment
+        // Extract base URL properly
+        let baseUrl;
+        try {
+          const urlObj = new URL(urlToScrape);
+          baseUrl = urlObj.origin;
+        } catch (e) {
+          baseUrl = urlToScrape.replace(/\/[^\/]*$/, '').replace(/\?.*$/, '');
+        }
+        
         const contactPages = ['/contact', '/contact-us', '/about', '/about-us'];
         
         for (const p of contactPages) {
           if (!state.running) break;
           log('P2: Trying contact page: ' + baseUrl + p, 'info');
           await navigateWebTab(baseUrl + p);
-          await sleep(2000);
+          await sleep(1500);
           
           try {
             await chrome.scripting.executeScript({
               target: { tabId: state.webTabId },
               files: ['content.js']
             });
-            await sleep(500);
+            await sleep(300);
           } catch (e) {}
           
           resp = await sendToWebTab({ action: 'extractWebsiteData' });
@@ -386,11 +394,11 @@ function navigateWebTab(url) {
         return; 
       }
       chrome.tabs.onUpdated.addListener(listener);
-      // Shorter timeout to avoid getting stuck
+      // Increased timeout for slow websites
       setTimeout(() => {
         log('navigateWebTab: Timeout reached for ' + url, 'info');
         done(); 
-      }, 20000);
+      }, 45000);
     });
   });
 }
