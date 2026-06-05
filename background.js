@@ -87,11 +87,49 @@ function normalizeUrl(url) {
   return url;
 }
 
+// Emergency services search queries - ICP Focus for ReplyzeAI
+// INCLUDE these keywords for emergency-urgency businesses
+const EMERGENCY_KEYWORDS = [
+  'emergency plumber',
+  'AC repair',
+  'HVAC repair',
+  'garage door repair',
+  'water damage restoration',
+  'flood damage restoration',
+  'roof leak repair',
+  'appliance repair',
+  'electrical repair',
+  '24 hour locksmith',
+  'emergency roof repair',
+  'emergency AC repair',
+  'emergency plumbing repair',
+  'emergency appliance repair',
+  '24/7 HVAC',
+];
+
+// EXCLUDE these keywords (non-emergency, low urgency)
+const EXCLUDE_KEYWORDS = [
+  'cleaning',
+  'pressure washing',
+  'landscaping',
+  'painting',
+  'home care',
+  'companion care',
+  'maid',
+  'janitorial',
+];
+
+function getEmergencySearchQueries(city) {
+  // Return array of search queries to run for a city
+  // This ensures we get a mix of emergency services
+  return EMERGENCY_KEYWORDS.map(kw => `${kw} in ${city}`);
+}
+
 async function startScraping(config) {
   state = { ...state, running: true, results: [], seenUrls: new Set(), totalLinks: 0, scraped: 0, failedCount: 0, noContactCount: 0, config, cities: config.cities };
   startKeepalive();
   
-  log('=== Phase 1: Google Maps ===', 'info');
+  log('=== Phase 1: Google Maps (EMERGENCY SERVICES ICP) ===', 'info');
   sendState('Phase 1: Scraping Google Maps...', 'running');
   
   const tab = await chrome.tabs.create({ url: 'https://www.google.com/maps', active: true });
@@ -104,39 +142,51 @@ async function startScraping(config) {
   for (const city of config.cities) {
     if (!state.running) break;
     
-    log('Searching: home services in ' + city, 'info');
+    // Get emergency service search queries for this city
+    const searchQueries = getEmergencySearchQueries(city);
+    
+    log('City: ' + city + ' - Running ' + searchQueries.length + ' emergency searches', 'info');
     sendState('Phase 1: ' + city, 'running');
     
-    const searchQuery = encodeURIComponent('home services in ' + city);
-    const url = 'https://www.google.com/maps/search/' + searchQuery;
-    
-    const pageLinks = await fetchPageLinks(url, config.maxPages || 2);
-    log('Found ' + (pageLinks?.length || 0) + ' business links', 'info');
-    
-    if (!pageLinks || pageLinks.length === 0) continue;
-    
-    const cityLinks = pageLinks.slice(0, config.maxBusinesses);
-    state.totalLinks += cityLinks.length;
-    
-    for (const profileUrl of cityLinks) {
+    for (const searchQuery of searchQueries) {
       if (!state.running) break;
       
-      const data = await fetchBusiness(profileUrl);
+      log('Searching: ' + searchQuery, 'info');
       
-      if (data && data.name) {
-        if (data.website) data.website = normalizeUrl(data.website);
-        state.results.push(data);
-        state.scraped++;
-        const webStatus = data.website ? ' [' + data.website + ']' : ' [no website]';
-        log('P1 OK: ' + data.name + webStatus, 'ok');
-      } else {
-        state.failedCount++;
-        log('P1 FAIL: ' + profileUrl, 'warn');
+      const url = 'https://www.google.com/maps/search/' + encodeURIComponent(searchQuery);
+      
+      const pageLinks = await fetchPageLinks(url, config.maxPages || 2);
+      log('Found ' + (pageLinks?.length || 0) + ' business links for: ' + searchQuery, 'info');
+      
+      if (!pageLinks || pageLinks.length === 0) continue;
+      
+      const cityLinks = pageLinks.slice(0, config.maxBusinesses);
+      state.totalLinks += cityLinks.length;
+      
+      for (const profileUrl of cityLinks) {
+        if (!state.running) break;
+        
+        // Skip if already scraped
+        if (state.seenUrls.has(profileUrl)) continue;
+        state.seenUrls.add(profileUrl);
+        
+        const data = await fetchBusiness(profileUrl);
+        
+        if (data && data.name) {
+          if (data.website) data.website = normalizeUrl(data.website);
+          state.results.push(data);
+          state.scraped++;
+          const webStatus = data.website ? ' [' + data.website + ']' : ' [no website]';
+          log('P1 OK: ' + data.name + webStatus, 'ok');
+        } else {
+          state.failedCount++;
+          log('P1 FAIL: ' + profileUrl, 'warn');
+        }
+        
+        await persistResults();
+        sendState('Phase 1: ' + state.scraped + ' businesses', 'running');
+        await sleep(config.delay * 1000);
       }
-      
-      await persistResults();
-      sendState('Phase 1: ' + state.scraped + ' businesses', 'running');
-      await sleep(config.delay * 1000);
     }
   }
 
