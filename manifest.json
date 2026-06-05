@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Xpiper Home Services Scraper",
-  "version": "2.1",
-  "description": "Scrape Google Maps & business websites for home service leads with emails",
+  "name": "ReplyzeAI Home Services Scraper",
+  "version": "2.2",
+  "description": "Scrape Google Maps & business websites for home service leads (ICP targeted)",
   "permissions": [
     "activeTab",
     "scripting",

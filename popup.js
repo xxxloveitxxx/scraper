@@ -166,7 +166,7 @@ function updateStats(s) {
   const total = s.totalLinks || 0;
   const done  = (s.scraped || 0) + (s.failedCount || 0);
   const pct   = total > 0 ? Math.round((done / total) * 100) : 0;
-  progressBar.style.width = pct + "%";
+  if(progressBar) progressBar.style.width = pct + "%";
 }
 
 function setDot(cls) {
@@ -199,7 +199,7 @@ function downloadCSV(businesses) {
   }
   
   const fields = [
-    "name", "category", "rating", "review_count", "address", "phone",
+    "name", "category", "rating", "review_count", "tech_stack", "address", "phone",
     "email", "twitter_handle", "website", "services", "about", "hours",
     "service_area", "owner", "years_in_business",
     "profile_url", "scraped_at",
@@ -208,7 +208,7 @@ function downloadCSV(businesses) {
   const escape = v => {
     if (v === null || v === undefined) return "";
     const str = Array.isArray(v) ? v.join(" | ") : String(v);
-    return "\"" + str.replace(/"/g, "\"\"") + "\"";
+    return "\"" + str.replace(/\"/g, "\"\"") + "\"";
   };
 
   const header = fields.join(",");
@@ -219,6 +219,7 @@ function downloadCSV(businesses) {
     return fields.map(f => {
       if (f === "email") return escape(primaryEmail);
       if (f === "twitter_handle") return escape(b.twitter_handle || "");
+      if (f === "tech_stack") return escape(b.tech_stack || "");
       return escape(b[f]);
     }).join(",");
   });
@@ -230,9 +231,9 @@ function downloadCSV(businesses) {
   const ts   = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
   chrome.downloads.download({
     url,
-    filename: "home_services_leads_" + ts + ".csv",
+    filename: "ReplyzeAI_leads_" + ts + ".csv",
     saveAs: false,
   });
   
-  addLog("Exported " + businessesWithEmail.length + " leads (email only) to CSV.", "ok");
+  addLog("Exported " + businessesWithEmail.length + " leads to CSV.", "ok");
 }

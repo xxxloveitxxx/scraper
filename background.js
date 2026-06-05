@@ -1,4 +1,4 @@
-// background.js - Home Services Scraper with 2-Phase scraping
+// background.js - Home Services Scraper (V3 Fixes + Timeouts Cleared)
 
 let _keepaliveTimer = null;
 let popupWindowId = null;
@@ -65,20 +65,15 @@ function getPublicState() {
 function sendState(text, dotClass) { chrome.runtime.sendMessage({ action: 'stateUpdate', text, dotClass, stats: getPublicState() }).catch(() => {}); }
 function log(text, level) { chrome.runtime.sendMessage({ action: 'log', text, level }).catch(() => {}); }
 
-// Check if business has email (required for export)
 function hasContactInfo(data) {
-  // Only count email as valid contact - no social media without email
   if (data.email) return true;
   if (data.emails && data.emails.length > 0) return true;
   return false;
 }
 
-// Normalize URL
 function normalizeUrl(url) {
   if (!url) return null;
-  url = url.trim();
-  url = url.replace(/["']+$/, '');
-  url = url.replace(/\/+$/, '');
+  url = url.trim().replace(/["']+$/, '').replace(/\/+$/, '');
   if (url.includes('google.com/url')) {
     try {
       const match = url.match(/url=([^&]+)/);
@@ -115,7 +110,7 @@ async function startScraping(config) {
     const searchQuery = encodeURIComponent('home services in ' + city);
     const url = 'https://www.google.com/maps/search/' + searchQuery;
     
-    const pageLinks = await fetchPageLinks(url);
+    const pageLinks = await fetchPageLinks(url, config.maxPages || 2);
     log('Found ' + (pageLinks?.length || 0) + ' business links', 'info');
     
     if (!pageLinks || pageLinks.length === 0) continue;
@@ -148,7 +143,6 @@ async function startScraping(config) {
   log('Phase 1 done: ' + state.scraped + ' businesses', 'ok');
   sendState('Phase 1: ' + state.scraped + ' collected', 'running');
   
-  // PHASE 2: Website emails & social
   log('=== Phase 2: Website Contacts ===', 'info');
   sendState('Phase 2: Scraping websites...', 'running');
   
@@ -158,13 +152,11 @@ async function startScraping(config) {
     
     const data = state.results[i];
     
-    // Skip if already has contact info
     if (hasContactInfo(data)) {
       log('P2 SKIP: ' + data.name + ' already has contact', 'info');
       continue;
     }
     
-    // Check if there's a website (primary or from website_urls)
     const websiteUrls = data.website_urls || [];
     const hasWebsite = data.website || websiteUrls.length > 0;
     
@@ -174,7 +166,6 @@ async function startScraping(config) {
       continue;
     }
     
-    // Log which URLs we're going to scrape
     const urlsToScrape = [data.website, ...websiteUrls].filter(Boolean);
     log('P2: Scraping ' + data.name + ' from ' + urlsToScrape.length + ' URL(s)', 'info');
     sendState('Phase 2: ' + (i + 1) + '/' + state.results.length + ' - ' + data.name, 'running');
@@ -183,8 +174,6 @@ async function startScraping(config) {
     
     if (websiteData) {
       let found = false;
-      
-      // Store email (required for export) - check both primary email and emails array
       const emailToSave = websiteData.email || (websiteData.emails && websiteData.emails[0]) || null;
       
       if (emailToSave) {
@@ -198,7 +187,6 @@ async function startScraping(config) {
         found = true;
       }
       
-      // Only store Twitter if email was also found
       if (websiteData.twitter_handle && emailToSave) {
         data.twitter_handle = websiteData.twitter_handle;
         log('P2: ' + data.name + ' Twitter = ' + data.twitter_handle, 'ok');
@@ -217,7 +205,6 @@ async function startScraping(config) {
     await sleep(config.delay * 1000);
   }
 
-  // Filter out businesses without contact info
   const withContact = state.results.filter(hasContactInfo);
   const withoutContact = state.results.filter(d => !hasContactInfo(d));
   
@@ -226,7 +213,6 @@ async function startScraping(config) {
   log('Without contact: ' + withoutContact.length + ' (not exported)', 'warn');
   if (emailCount > 0) log('Emails found: ' + emailCount, 'ok');
   
-  // Only keep businesses with contact info
   state.results = withContact;
   
   state.running = false;
@@ -235,30 +221,81 @@ async function startScraping(config) {
   if (state.webTabId) { chrome.tabs.remove(state.webTabId).catch(() => {}); state.webTabId = null; }
   
   await persistResults();
-  log('=== DONE! ' + withContact.length + ' leads with contact info ===', 'ok');
-  sendState('Done! ' + withContact.length + ' leads (skipped ' + withoutContact.length + ' without contact)', 'done');
+  log('=== DONE! ' + withContact.length + ' leads ===', 'ok');
+  sendState('Done! ' + withContact.length + ' leads', 'done');
   chrome.runtime.sendMessage({ action: 'done', resultsLen: withContact.length }).catch(() => {});
 }
 
-async function fetchPageLinks(url) {
+// ==========================================
+// NEW PAGINATION LOGIC (Manifest V3)
+// ==========================================
+async function fetchPageLinks(url, maxPages = 2) {
   await navigateTab(url);
-  await sleep(5000);
-  const resp = await sendToContent({ action: 'extractLinks' });
-  return (resp && !resp.blocked) ? resp.links || [] : null;
+  await sleep(3000);
+  log('Scrolling to load more results...', 'info');
+  const allLinks = new Set();
+  for (let i = 0; i < maxPages; i++) {
+    const resp = await sendToContent({ action: 'extractLinks' });
+    if (resp && !resp.blocked && resp.links) resp.links.forEach(link => allLinks.add(link));
+    await scrollToLoadMore();
+    await sleep(2500);
+    await clickNextButton();
+    await sleep(3000);
+  }
+  const finalResp = await sendToContent({ action: 'extractLinks' });
+  if (finalResp && !finalResp.blocked && finalResp.links) finalResp.links.forEach(link => allLinks.add(link));
+  return Array.from(allLinks);
+}
+
+async function scrollToLoadMore() {
+  return new Promise((resolve) => {
+    if (!state.tabId) { resolve(); return; }
+    chrome.scripting.executeScript({
+      target: { tabId: state.tabId },
+      func: () => {
+        const feedContainer = document.querySelector('div[role="feed"]');
+        if (feedContainer) feedContainer.scrollTop = feedContainer.scrollHeight;
+        else {
+          const scrollContainer = document.querySelector('#pane') || 
+                                  document.querySelector('[role="main"]') || 
+                                  document.querySelector('.Nv2PK')?.closest('.m6QErb');
+          if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+          else window.scrollTo(0, document.body.scrollHeight);
+        }
+        const loadMoreBtns = document.querySelectorAll('button, a');
+        for (const btn of loadMoreBtns) {
+          const text = (btn.innerText || '').toLowerCase();
+          if (text.includes('more results') || text.includes('load more') || text.includes('see more')) {
+            btn.click(); break;
+          }
+        }
+      }
+    }, () => resolve());
+  });
+}
+
+async function clickNextButton() {
+  return new Promise((resolve) => {
+    if (!state.tabId) { resolve(); return; }
+    chrome.scripting.executeScript({
+      target: { tabId: state.tabId },
+      func: () => {
+        const nextBtn = Array.from(document.querySelectorAll('button, a')).find(el => {
+          const text = (el.innerText || '').toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          return (text.includes('next') || aria.includes('next')) && 
+                 !text.includes('search') && !aria.includes('search');
+        });
+        if (nextBtn && !nextBtn.disabled) nextBtn.click();
+      }
+    }, () => resolve());
+  });
 }
 
 async function fetchBusiness(url) {
   await navigateTab(url);
-  await sleep(6000); // Wait for Google Maps to load all content
+  await sleep(6000); 
   const resp = await sendToContent({ action: 'extractProfile' });
-  
-  // Debug: log what we got from content script
-  if (resp && resp.data) {
-    log('P1: Got profile - name: ' + resp.data.name + ', website: ' + resp.data.website, 'info');
-  } else {
-    log('P1: No response from content script for ' + url, 'warn');
-  }
-  
   return (resp && !resp.blocked) ? resp.data || null : null;
 }
 
@@ -287,53 +324,29 @@ function sendToContent(msg) {
 }
 
 async function scrapeWebsite(url, allUrls = []) {
-  if (!url && (!allUrls || allUrls.length === 0)) {
-    log('P2: No URL or allUrls provided', 'warn');
-    return null;
-  }
-  
-  // Use allUrls if provided, otherwise just use url
+  if (!url && (!allUrls || allUrls.length === 0)) return null;
   const urlsToTry = (allUrls && allUrls.length > 0) ? allUrls : (url ? [url] : []);
   
   try {
-    // Try each URL
     for (const urlToTry of urlsToTry) {
       if (!state.running) break;
-      
       const urlToScrape = normalizeUrl(urlToTry);
       if (!urlToScrape) continue;
       
       log('P2: Scraping: ' + urlToScrape, 'info');
-      
-      // Navigate to the website
       await navigateWebTab(urlToScrape);
       await sleep(2000);
       
-      // Inject content script
       try {
-        await chrome.scripting.executeScript({
-          target: { tabId: state.webTabId },
-          files: ['content.js']
-        });
+        await chrome.scripting.executeScript({ target: { tabId: state.webTabId }, files: ['content.js'] });
         await sleep(300);
-      } catch (e) { 
-        log('P2: Script injection failed: ' + e.message, 'warn');
-      }
+      } catch (e) { }
       
-      // Try main page
       let resp = await sendToWebTab({ action: 'extractWebsiteData' });
-      
-      // Only consider it found if there's an email
       const hasEmail = resp && resp.data && (resp.data.email || (resp.data.emails && resp.data.emails.length > 0));
+      if (hasEmail) return resp.data;
       
-      if (hasEmail) {
-        log('P2: Found email at ' + urlToScrape, 'ok');
-        return resp.data;
-      }
-      
-      // If no email on main page, try contact pages (with faster retries)
       if (resp && resp.data) {
-        // Extract base URL properly
         let baseUrl;
         try {
           const urlObj = new URL(urlToScrape);
@@ -343,79 +356,68 @@ async function scrapeWebsite(url, allUrls = []) {
         }
         
         const contactPages = ['/contact', '/contact-us', '/about', '/about-us'];
-        
         for (const p of contactPages) {
           if (!state.running) break;
-          log('P2: Trying contact page: ' + baseUrl + p, 'info');
           await navigateWebTab(baseUrl + p);
           await sleep(1500);
-          
           try {
-            await chrome.scripting.executeScript({
-              target: { tabId: state.webTabId },
-              files: ['content.js']
-            });
+            await chrome.scripting.executeScript({ target: { tabId: state.webTabId }, files: ['content.js'] });
             await sleep(300);
           } catch (e) {}
           
           resp = await sendToWebTab({ action: 'extractWebsiteData' });
-          
           const contactHasEmail = resp && resp.data && (resp.data.email || (resp.data.emails && resp.data.emails.length > 0));
-          if (contactHasEmail) {
-            log('P2: Found email on ' + p, 'ok');
-            return resp.data;
-          }
+          if (contactHasEmail) return resp.data;
         }
       }
     }
-    
     return null;
-  } catch (e) { 
-    log('P2: Exception: ' + e.message, 'warn');
-    return null; 
-  }
+  } catch (e) { return null; }
 }
+
+let webTabTimeoutTimer = null;
 
 function navigateWebTab(url) {
   return new Promise((resolve) => {
-    if (!state.webTabId) { 
-      log('navigateWebTab: No webTabId', 'warn');
-      resolve(); 
-      return; 
+    if (!state.webTabId) { resolve(); return; }
+    
+    // Clear any existing timer to prevent overlapping timeouts
+    if (webTabTimeoutTimer) {
+      clearTimeout(webTabTimeoutTimer);
+      webTabTimeoutTimer = null;
     }
+
     let resolved = false;
-    const done = () => { if (!resolved) { resolved = true; chrome.tabs.onUpdated.removeListener(listener); resolve(); } };
-    const listener = (tabId, info) => { if (tabId === state.webTabId && info.status === 'complete') done(); };
-    log('navigateWebTab: Updating tab to ' + url, 'info');
+    const listener = (tabId, info) => { 
+      if (tabId === state.webTabId && info.status === 'complete') done(); 
+    };
+
+    const done = () => { 
+      if (!resolved) { 
+        resolved = true; 
+        chrome.tabs.onUpdated.removeListener(listener); 
+        if (webTabTimeoutTimer) {
+            clearTimeout(webTabTimeoutTimer);
+            webTabTimeoutTimer = null;
+        }
+        resolve(); 
+      } 
+    };
+    
     chrome.tabs.update(state.webTabId, { url }, (tab) => {
-      if (chrome.runtime.lastError || !tab) { 
-        log('navigateWebTab: Tab update failed - ' + (chrome.runtime.lastError?.message || 'no tab'), 'warn');
-        done(); 
-        return; 
-      }
+      if (chrome.runtime.lastError || !tab) { done(); return; }
       chrome.tabs.onUpdated.addListener(listener);
-      // Increased timeout for slow websites
-      setTimeout(() => {
-        log('navigateWebTab: Timeout reached for ' + url, 'info');
-        done(); 
-      }, 45000);
+      // Fixed 15 sec timeout for P2 is better than 45s to speed things up
+      webTabTimeoutTimer = setTimeout(done, 15000);
     });
   });
 }
 
 function sendToWebTab(msg) {
   return new Promise((resolve) => {
-    if (!state.webTabId) { 
-      log('sendToWebTab: No webTabId', 'warn');
-      resolve(null); 
-      return; 
-    }
+    if (!state.webTabId) { resolve(null); return; }
     chrome.tabs.sendMessage(state.webTabId, msg, (resp) => {
-      if (chrome.runtime.lastError) { 
-        log('sendToWebTab: Runtime error - ' + chrome.runtime.lastError.message, 'warn');
-        resolve(null); 
-        return; 
-      }
+      if (chrome.runtime.lastError) { resolve(null); return; }
       resolve(resp);
     });
   });

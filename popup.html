@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Lead Scraper</title>
+  <title>ReplyzeAI Lead Scraper</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -241,7 +241,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>Lead Scraper</h1>
+    <h1>ReplyzeAI Scraper</h1>
   </div>
 
   <div class="container">
@@ -279,8 +279,8 @@
 
     <!-- Cities Input -->
     <div class="form-group">
-      <label class="form-label">Target Cities (one per line)</label>
-      <textarea id="cities" placeholder="New York, NY&#10;Los Angeles, CA&#10;Chicago, IL"></textarea>
+      <label class="form-label">Target Cities (e.g. Tampa, FL)</label>
+      <textarea id="cities" placeholder="Houston, TX&#10;Phoenix, AZ&#10;Miami, FL"></textarea>
     </div>
 
     <!-- Settings -->
@@ -288,7 +288,7 @@
       <label class="form-label">Scraping Settings</label>
       <div class="row">
         <div>
-          <label class="form-label">Max Businesses</label>
+          <label class="form-label">Max Biz</label>
           <input type="number" id="maxBusinesses" value="30" min="1">
         </div>
         <div>
@@ -296,7 +296,7 @@
           <input type="number" id="maxPages" value="2" min="1">
         </div>
         <div>
-          <label class="form-label">Delay (sec)</label>
+          <label class="form-label">Delay (s)</label>
           <input type="number" id="delay" value="4" min="1">
         </div>
       </div>
