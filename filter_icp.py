@@ -4,17 +4,20 @@ ICP Filter Script for ReplyzeAI
 Filters scraped leads based on emergency services criteria.
 
 EXCLUDE rules:
-- review_count < 50 (not enough volume)
+- review_count < 20 (not enough volume)
 - review_count > 800 (too big, has call center)
 - email is missing
-- email = generic placeholder (info@mysite.com, etc.)
+- email = generic placeholder (info@mysite.com, john@doe.com, etc.)
 - category/about contains: cleaning, washing, painting, care, home care, companion, maid, janitorial
 - hours ≠ Open 24 hours (not emergency-focused)
+- FRANCHISE brands: SERVPRO, Mr. Appliance, Franchise
+- WRONG NICHE: insurance companies, resellers, non-service businesses
 
 SCORING:
-- ⭐⭐⭐ Has tech_stack (Workiz/ServiceTitan/Jobber) = Top Priority
-- ⭐⭐ Has personal email (@gmail/@hotmail/@live) = High Priority 
-- ⭐ Has generic business email = Normal Priority
+- ⭐⭐⭐ Personal emails (gmail, hotmail, aol, outlook) + tech_stack = Top Priority
+- ⭐⭐ Personal emails (gmail, hotmail, aol, outlook) = High Priority 
+- ⭐ Named business emails (owner name detected) = Medium Priority
+- ⭐ Generic business emails = Normal Priority
 """
 
 import csv
@@ -38,23 +41,51 @@ EMERGENCY_KEYWORDS = [
     'electrical', 'locksmith', 'roof', 'leak'
 ]
 
-# Generic email patterns to reject (only TRUE placeholders)
+# PLACEHOLDER emails - auto-reject (not real business emails)
 PLACEHOLDER_EMAIL_PATTERNS = [
-    'info@mysite.com',  # The only explicit placeholder mentioned
-    # Add other obvious placeholder patterns if needed
+    'info@mysite.com',  # Explicit placeholder
+    'john@doe.com',    # Fake test email
+    'test@',           # Test emails
+    'example@',        # Example emails
+]
+
+# FRANCHISE brands to reject (too big for SMB tool)
+FRANCHISE_KEYWORDS = [
+    'servpro', 'servpro of', 'mr. appliance', 'mrappliance',
+    'franchise', 'franchised', 'corporate', 'enterprise',
+    'moldex', 'servicemaster', 'puroclean',
+]
+
+# WRONG NICHE - not emergency service businesses
+WRONG_NICHE_KEYWORDS = [
+    'insurance', 'flood insurance', 'coverage', 'policy',
+    'reseller', 'retail', 'store', 'sell ', ' sells ',
+    'home goods', 'furniture', 'appliance store',
 ]
 
 # Generic email prefixes that should be treated as suspicious (but not automatic rejection)
-# These are less priority but not disqualifying
 SUSPICIOUS_EMAIL_PREFIXES = [
     'info@', 'contact@', 'support@', 'sales@', 'admin@', 'hello@', 'office@', 'business@'
 ]
 
-# Personal email domains (high priority)
-PERSONAL_EMAIL_DOMAINS = ['gmail.com', 'hotmail.com', 'outlook.com', 'live.com', 'yahoo.com']
+# Personal email domains (HIGHEST priority)
+PERSONAL_EMAIL_DOMAINS = ['gmail.com', 'hotmail.com', 'outlook.com', 'live.com', 'yahoo.com', 'aol.com', 'protonmail.com']
 
-# Minimum reviews - but be lenient (some good leads may have fewer)
-MIN_REVIEWS = 20  # Lowered from 50 to match user's actual example (Optimus had 24)
+# Minimum reviews
+MIN_REVIEWS = 20
+
+def clean_email(email):
+    """Clean email from URL encoding and special characters."""
+    if not email:
+        return None
+    import urllib.parse
+    # Decode URL encoding
+    email = urllib.parse.unquote(email)
+    # Remove invisible Unicode characters
+    email = email.replace('\u200b', '')  # Zero-width space
+    email = email.replace('\ufeff', '')  # BOM
+    email = email.strip()
+    return email if '@' in email else None
 
 def is_placeholder_email(email):
     """Check if email is a true placeholder (not a real business email)."""
@@ -62,7 +93,23 @@ def is_placeholder_email(email):
         return False
     lower_email = email.lower()
     for pattern in PLACEHOLDER_EMAIL_PATTERNS:
-        if lower_email == pattern:
+        if pattern in lower_email:
+            return True
+    return False
+
+def is_franchise(name, website, about):
+    """Check if business is a franchise or large chain."""
+    combined = f"{name} {website} {about}".lower()
+    for keyword in FRANCHISE_KEYWORDS:
+        if keyword in combined:
+            return True
+    return False
+
+def is_wrong_niche(name, about, website, services):
+    """Check if business is in wrong niche (insurance, retail, etc.)."""
+    combined = f"{name} {about} {website} {services}".lower()
+    for keyword in WRONG_NICHE_KEYWORDS:
+        if keyword in combined:
             return True
     return False
 
@@ -92,15 +139,37 @@ def is_open_24_hours(hours_text):
         return False
     return 'open 24 hours' in hours_text.lower() or 'open 24/7' in hours_text.lower()
 
-def get_email_priority(email, tech_stack):
-    """Determine email priority based on tech stack and email type."""
-    if tech_stack and any(ts in tech_stack.lower() for ts in ['workiz', 'servicetitan', 'jobber', 'housecall']):
-        return 'TOP', '⭐⭐⭐'
-    if email:
-        domain = email.split('@')[-1].lower() if '@' in email else ''
-        if domain in PERSONAL_EMAIL_DOMAINS:
-            return 'HIGH', '⭐⭐'
-    return 'NORMAL', '⭐'
+def get_email_priority(email, tech_stack, name):
+    """Determine email priority based on email type and tech stack."""
+    if not email:
+        return 'LOW', '❌'
+    
+    domain = email.split('@')[-1].lower() if '@' in email else ''
+    local_part = email.split('@')[0].lower() if '@' in email else ''
+    
+    # TIER 1: Personal emails (highest reply rate) - goes directly to owner's phone
+    if domain in PERSONAL_EMAIL_DOMAINS:
+        if tech_stack and any(ts in tech_stack.lower() for ts in ['workiz', 'servicetitan', 'jobber', 'housecall']):
+            return 'TIER_1', '⭐⭐⭐'
+        return 'TIER_1', '⭐⭐'
+    
+    # TIER 2: Named business emails - goes to a specific person, not a generic inbox
+    # Check if owner's name is in the email
+    name_parts = name.lower().split() if name else []
+    for part in name_parts:
+        if len(part) > 2 and part in local_part:
+            return 'TIER_2', '⭐⭐'
+    
+    # Short, specific contact patterns (likely to reach decision makers)
+    # These are shorter than typical generic emails and suggest a specific person
+    named_specific = ['schedule', 'team', 'cs', 'tampa', 'hvac']
+    for pattern in named_specific:
+        if pattern in local_part and len(local_part) < 12:
+            return 'TIER_2', '⭐⭐'
+    
+    # TIER 3: Generic business emails - might hit a front desk or shared inbox
+    # info@, support@, contact@, sales@, service@, office@, etc.
+    return 'TIER_3', '⭐'
 
 def filter_lead(row):
     """
@@ -111,14 +180,25 @@ def filter_lead(row):
     category = row.get('category', '')
     about = row.get('about', '')
     services = row.get('services', '')
-    email = row.get('email', '')
+    email = clean_email(row.get('email', ''))  # Clean email
     hours = row.get('hours', '')
     review_count_str = row.get('review_count', '0')
     tech_stack = row.get('tech_stack', '')
     website = row.get('website', '')
     
-    # Combine text fields for keyword checking (include website)
+    # Store cleaned email back in row for later use
+    row['email'] = email
+    
+    # Combine text fields for keyword checking
     combined_text = f"{name} {category} {about} {services} {website}".lower()
+    
+    # Filter 0: Franchise check
+    if is_franchise(name, website, about):
+        return False, f"FRANCHISE: {name}"
+    
+    # Filter 0b: Wrong niche check
+    if is_wrong_niche(name, about, website, services):
+        return False, f"WRONG NICHE: {name}"
     
     # Filter 1: Review count
     try:
@@ -168,10 +248,11 @@ def process_csv(input_file, output_file, rejected_file=None):
             if city_match:
                 city = city_match.group()
             
-            # Determine priority
+            # Determine priority (now includes name for named email detection)
             email = row.get('email', '')
             tech_stack = row.get('tech_stack', '')
-            priority, stars = get_email_priority(email, tech_stack)
+            name = row.get('name', '')
+            priority, stars = get_email_priority(email, tech_stack, name)
             
             # Add derived fields
             row['filter_reason'] = reason
@@ -184,9 +265,9 @@ def process_csv(input_file, output_file, rejected_file=None):
             else:
                 rejected.append(row)
     
-    # Sort qualified leads by priority
-    priority_order = {'TOP': 0, 'HIGH': 1, 'NORMAL': 2}
-    qualified.sort(key=lambda x: (priority_order.get(x.get('priority', 'NORMAL'), 2), -int(x.get('review_count', 0))))
+    # Sort qualified leads by priority (TIER_1 > TIER_2 > TIER_3)
+    priority_order = {'TIER_1': 0, 'TIER_2': 1, 'TIER_3': 2, 'LOW': 3}
+    qualified.sort(key=lambda x: (priority_order.get(x.get('priority', 'TIER_3'), 3), -int(x.get('review_count', 0))))
     
     # Write qualified leads
     if qualified:
@@ -308,14 +389,22 @@ Open to it?
 
 if __name__ == '__main__':
     import os
+    import argparse
     
-    input_file = '/workspace/ReplyzeAI_leads_2026-06-03_17-39.csv'
-    output_file = '/workspace/qualified_leads.csv'
-    rejected_file = '/workspace/rejected_leads.csv'
+    parser = argparse.ArgumentParser(description='ReplyzeAI ICP Filter')
+    parser.add_argument('--input', '-i', default='/workspace/ReplyzeAI_leads_2026-06-05_13-08.csv', help='Input CSV file')
+    parser.add_argument('--output', '-o', default='/workspace/qualified_leads_tampa.csv', help='Output CSV file')
+    parser.add_argument('--rejected', '-r', default='/workspace/rejected_leads_tampa.csv', help='Rejected leads CSV file')
+    args = parser.parse_args()
+    
+    input_file = args.input
+    output_file = args.output
+    rejected_file = args.rejected
     
     print("=" * 60)
     print("ReplyzeAI ICP Filter - Emergency Services Focus")
     print("=" * 60)
+    print(f"Input: {input_file}")
     print()
     
     qualified, rejected = process_csv(input_file, output_file, rejected_file)
@@ -337,31 +426,32 @@ if __name__ == '__main__':
         print()
     
     if qualified:
-        print("✅ QUALIFIED LEADS (Ready for outreach):")
-        print("-" * 60)
-        for i, lead in enumerate(qualified, 1):
-            print(f"\n{i}. {lead.get('name', 'Unknown')}")
-            print(f"   📍 {lead.get('city', 'N/A')}")
-            print(f"   📞 {lead.get('phone', 'N/A')}")
-            print(f"   ✉️  {lead.get('email', 'N/A')}")
-            print(f"   ⭐ {lead.get('review_count', '0')} reviews")
-            print(f"   🛠️  Tech: {lead.get('tech_stack', 'None')}")
-            print(f"   {lead.get('priority_stars', '⭐')} Priority: {lead.get('priority', 'NORMAL')}")
-            
-            # Generate template
-            templates = generate_templates(lead)
-            if 'Workiz' in lead.get('tech_stack', '') or 'ServiceTitan' in lead.get('tech_stack', ''):
-                template_type = 'tech_stack'
-            elif 'AC' in lead.get('name', '').upper() or 'HVAC' in lead.get('name', '').upper():
-                template_type = 'ac_hvac'
-            else:
-                template_type = 'general'
-            
-            print(f"\n   📧 RECOMMENDED TEMPLATE ({template_type}):")
-            print("   " + "-" * 40)
-            for line in templates[template_type].split('\n')[:10]:
-                print(f"   {line}")
-            print("   ...")
+        # Group by tier
+        tier_1 = [l for l in qualified if l.get('priority') == 'TIER_1']
+        tier_2 = [l for l in qualified if l.get('priority') == 'TIER_2']
+        tier_3 = [l for l in qualified if l.get('priority') == 'TIER_3']
+        
+        print("=" * 60)
+        print("📧 SENDING TIERS")
+        print("=" * 60)
+        
+        if tier_1:
+            print(f"\n⭐⭐⭐ TIER 1 - PERSONAL EMAILS (Send First - {len(tier_1)} leads)")
+            print("-" * 50)
+            for lead in tier_1:
+                print(f"   {lead.get('email', 'N/A')} - {lead.get('name', 'Unknown')} ({lead.get('review_count', 0)} reviews)")
+        
+        if tier_2:
+            print(f"\n⭐⭐ TIER 2 - NAMED BUSINESS EMAILS ({len(tier_2)} leads)")
+            print("-" * 50)
+            for lead in tier_2:
+                print(f"   {lead.get('email', 'N/A')} - {lead.get('name', 'Unknown')} ({lead.get('review_count', 0)} reviews)")
+        
+        if tier_3:
+            print(f"\n⭐ TIER 3 - GENERIC BUSINESS EMAILS ({len(tier_3)} leads)")
+            print("-" * 50)
+            for lead in tier_3:
+                print(f"   {lead.get('email', 'N/A')} - {lead.get('name', 'Unknown')} ({lead.get('review_count', 0)} reviews)")
         
         print("\n" + "=" * 60)
         print(f"✅ Qualified leads saved to: {output_file}")
