@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ReplyzeAI Engine Dashboard</title>
+  <style>
+    body { font-family: 'DM Sans', sans-serif; background: #080808; color: #e8e4dc; padding: 40px; }
+    .card { background: #141414; border: 1px solid #232323; padding: 20px; border-radius: 12px; max-width: 600px; margin: auto; }
+    h1 { color: #c8a96e; text-align: center; }
+    .status-box { padding: 15px; background: #0f0f0f; border: 1px solid #c8a96e; margin: 20px 0; text-align: center; font-weight: bold; }
+    .lead-count { text-align: center; color: #6b6560; font-size: 14px; margin-bottom: 10px; }
+    .controls { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    button { padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; border: 1px solid #232323; background: transparent; color: white; }
+    .btn-gold { background: #c8a96e; color: #080808; border: none; }
+    .btn-red { color: #e05252; border-color: #e05252; }
+    #log { font-family: monospace; font-size: 12px; height: 200px; overflow-y: auto; background: #000; padding: 10px; margin-top: 20px; border: 1px solid #232323; color: #6b6560; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>ReplyzeAI Engine</h1>
+    <div id="leadCount" class="lead-count">0 leads collected</div>
+    <div id="status" class="status-box">IDLE</div>
+    <div class="controls">
+      <button id="startBtn" class="btn-gold">Start Phase 1</button>
+      <button id="resumeBtn" class="btn-gold" style="display:none;">Resume Execution</button>
+      <button id="exportBtn">Export CSV</button>
+      <button id="clearBtn" class="btn-red">Clear Data</button>
+    </div>
+    <div id="log">Initializing...<br></div>
+  </div>
+  <script src="dashboard.js"></script>
+</body>
+</html>
